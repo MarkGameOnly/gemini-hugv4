@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, APIRouter
-import logic
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import (
     Message, BotCommand,
@@ -87,6 +87,12 @@ bot = Bot(token=BOT_TOKEN, session=session)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+# === Фоновая задача — напоминания о подписках ===
+async def check_subscription_reminders():
+    while True:
+        print("🔔 Проверка напоминаний о подписках...")
+        await asyncio.sleep(3600)
 
 # === Состояния ===
 class GenStates(StatesGroup):
