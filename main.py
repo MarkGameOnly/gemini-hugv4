@@ -112,19 +112,41 @@ def main_menu() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True
     )
-
 # === Таймаут для скачивания изображений ===
 aiohttp_timeout = aiohttp.ClientTimeout(total=60)
 
-# === Обновлённая функция скачивания изображений с DALL·E ===
+# === Функция скачивания изображения ===
+async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes:
+    async with session.get(url) as resp:
+        if resp.status == 200:
+            return await resp.read()
+        raise Exception("Ошибка загрузки изображения")
+
+# === Обертка над скачиванием изображения с DALL·E ===
 async def download_image(image_url: str) -> bytes:
     async with aiohttp.ClientSession(timeout=aiohttp_timeout) as s:
-        async with s.get(image_url) as resp:
-            if resp.status == 200:
-                return await resp.read()
-            raise Exception("Ошибка загрузки изображения")
+        return await fetch_image(s, image_url)
 
-# === Остальная логика перенесена в следующую часть ===
+# === Клавиатура для режима Gemini ===
+def gemini_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]]
+    )
+
+# === Обработчик выхода из Gemini ===
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("🔙 Возвращаюсь в главное меню.", reply_markup=main_menu())
+    await callback.answer()
+
+@dp.message(Command("stop"))
+async def stop_command(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🛑 Режим остановлен. Вы в главном меню:", reply_markup=main_menu())
+    
+    # === Остальная логика перенесена в следующую часть ===
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -238,17 +260,31 @@ async def buy_subscription(message: Message):
         )
     except Exception as e:
         await message.answer(f"❌ Ошибка создания подписки: {e}")
-
+        
 # === Умный помощник ===
 @dp.message(F.text == "🧠 Умный помощник")
 async def start_assistant(message: Message, state: FSMContext):
     await state.set_state(AssistantState.chatting)
-    await message.answer("🧠 Помощник включен! Напишите ваш вопрос. Чтобы остановить, введите /stop")
+    await message.answer(
+        "🧠 Помощник включен! Напишите ваш вопрос.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🛑 Остановить", callback_data="stop_assistant")],
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]
+            ]
+        )
+    )
+
+@dp.callback_query(F.data == "stop_assistant")
+async def stop_assistant_button(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("🚩 Помощник остановлен. Возвращаю в главное меню.", reply_markup=main_menu())
+    await callback.answer()
 
 @dp.message(Command("stop"))
 async def stop_assistant(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("🚩 Помощник остановлен. Возвращаю в главное меню.")
+    await message.answer("🚩 Помощник остановлен. Возвращаю в главное меню.", reply_markup=main_menu())
 
 @dp.message(AssistantState.chatting)
 async def handle_assistant_message(message: Message, state: FSMContext):
@@ -335,12 +371,14 @@ async def generate_image(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-
-# === Часть 3: Gemini AI + Примеры + Webhook ===
+# === Gemini AI + Примеры + Webhook ===
 
 @dp.message(F.text == "🌌 Gemini AI")
 async def start_gemini_dialog(message: Message, state: FSMContext):
-    await message.answer("🌌 Добро пожаловать в режим Gemini! Напиши свой вопрос или запрос:")
+    await message.answer("\ud83c\udf0c Добро пожаловать в режим Gemini! Напиши свой вопрос или запрос:",
+                         reply_markup=InlineKeyboardMarkup(
+                             inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]]
+                         ))
     await state.set_state(StateAssistant.dialog)
 
 @dp.message(StateAssistant.dialog)
@@ -378,11 +416,11 @@ async def gemini_examples(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="Погода", callback_data="weather_example"),
          InlineKeyboardButton(text="Новости", callback_data="news_example")],
         [InlineKeyboardButton(text="Фильмы", callback_data="movies_example"),
-         InlineKeyboardButton(text="Заработок", callback_data="money_example")]
+         InlineKeyboardButton(text="Заработок", callback_data="money_example")],
+        [InlineKeyboardButton(text="🌹 Случайный", callback_data="random_example")],
+        [InlineKeyboardButton(text="➔ Новый запрос", callback_data="new_query")]
     ]
-    extra_buttons = [[InlineKeyboardButton(text="🌹 Случайный", callback_data="random_example")],
-                     [InlineKeyboardButton(text="🔄 Новый запрос", callback_data="new_query")]]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=examples + extra_buttons)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=examples)
     await message.answer("🌠 Выберите пример или задайте свой вопрос:", reply_markup=keyboard)
     await state.set_state(StateAssistant.dialog)
 
@@ -420,8 +458,20 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
     }
     prompt = prompt_map.get(data_id)
     if prompt:
-        await handle_gemini_dialog(types.Message(message_id=callback.message.message_id, from_user=callback.from_user, text=prompt), state)
+        if data_id.startswith("img_"):
+            await process_image_generation(callback.message, prompt)
+        else:
+            fake_msg = types.Message(
+                message_id=callback.message.message_id,
+                date=callback.message.date,
+                chat=callback.message.chat,
+                from_user=callback.from_user,
+                message_thread_id=callback.message.message_thread_id,
+                text=prompt
+            )
+            await handle_gemini_dialog(fake_msg, state)
     await callback.answer()
+
 
 # === FastAPI Webhook + Lifespan ===
 router = APIRouter()
