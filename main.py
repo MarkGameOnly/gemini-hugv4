@@ -446,7 +446,7 @@ async def lifespan(app: FastAPI):
         BotCommand(command="admin", description="⚙️ Админка")
     ])
 
-    asyncio.create_task(check_subscription_reminders())  # ✅ Тут безопасно
+    asyncio.create_task(check_subscription_reminders())
 
     yield
 
@@ -458,5 +458,4 @@ app.include_router(router)
 @app.get("/")
 async def root():
     return {"status": "ok"}
-
 
