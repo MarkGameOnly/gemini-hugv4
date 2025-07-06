@@ -380,16 +380,19 @@ async def process_image_generation(message: Message, prompt: str):
 
 @dp.message(F.text == "🌌 Gemini AI")
 async def start_gemini_dialog(message: Message, state: FSMContext):
-    await message.answer("\ud83c\udf0c Добро пожаловать в режим Gemini! Напиши свой вопрос или запрос:",
-                         reply_markup=InlineKeyboardMarkup(
-                             inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]]
-                         ))
+    await message.answer(
+        "🌌 Добро пожаловать в режим Gemini! Напиши свой вопрос или запрос:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]]
+        )
+    )
     await state.set_state(StateAssistant.dialog)
 
 @dp.message(StateAssistant.dialog)
 async def handle_gemini_dialog(message: Message, state: FSMContext):
     user_id = message.from_user.id
     ensure_user(user_id)
+
     if str(user_id) != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
         await message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
         return
@@ -401,9 +404,11 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         )
         reply = response.choices[0].message.content
         await message.answer(reply)
-        cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
-        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "gemini", message.text))
-        conn.commit()
+
+        if str(user_id) != ADMIN_ID:
+            cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
+            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "gemini", message.text))
+            conn.commit()
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -423,7 +428,8 @@ async def gemini_examples(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="Фильмы", callback_data="movies_example"),
          InlineKeyboardButton(text="Заработок", callback_data="money_example")],
         [InlineKeyboardButton(text="🌹 Случайный", callback_data="random_example")],
-        [InlineKeyboardButton(text="➔ Новый запрос", callback_data="new_query")]
+        [InlineKeyboardButton(text="➔ Новый запрос", callback_data="new_query")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]
     ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=examples)
     await message.answer("🌠 Выберите пример или задайте свой вопрос:", reply_markup=keyboard)
