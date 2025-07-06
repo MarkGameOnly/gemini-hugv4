@@ -88,6 +88,8 @@ DOMAIN_URL = os.getenv("DOMAIN_URL")
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 storage = MemoryStorage()
+dp = Dispatcher(storage=storage)  # 👈 добавлено объявление dp
+
 timeout = httpx.Timeout(30.0, connect=10.0)
 client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=timeout)
 
