@@ -4,6 +4,5 @@ aiogram==3.3.0
 aiohttp
 openai
 python-dotenv
-aiocryptopay==1.0.1
+aiocryptopay==0.4.8
 pydantic  # для FastAPI
-
