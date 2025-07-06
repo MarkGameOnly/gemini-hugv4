@@ -3,11 +3,12 @@ meta:
   toolchain:
     name: pip
     version: "3.11"
+
 build:
   requirementsPath: requirements.txt
+
 run:
-  scriptName: main.py
-  command: python main.py
+  scriptName: launch.py
+  command: python launch.py
   persistenceMount: /data
   containerPort: "8000"
-
