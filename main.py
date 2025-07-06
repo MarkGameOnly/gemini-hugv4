@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, APIRouter
+from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import (
@@ -20,6 +21,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 
+import aiohttp
+import httpx
 from openai import AsyncOpenAI
 
 from crypto import create_invoice
@@ -85,8 +88,8 @@ DOMAIN_URL = os.getenv("DOMAIN_URL")
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
-client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+timeout = httpx.Timeout(30.0, connect=10.0)
+client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=timeout)
 
 # === Фоновая задача — напоминания о подписках ===
 async def check_subscription_reminders():
@@ -116,6 +119,17 @@ def main_menu() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True
     )
+
+# === Таймаут для скачивания изображений ===
+aiohttp_timeout = aiohttp.ClientTimeout(total=30)
+
+# === Обновлённая функция скачивания изображений с DALL·E ===
+async def download_image(image_url: str) -> bytes:
+    async with aiohttp.ClientSession(timeout=aiohttp_timeout) as s:
+        async with s.get(image_url) as resp:
+            if resp.status == 200:
+                return await resp.read()
+            raise Exception("Ошибка загрузки изображения")
 
 # === Остальная логика перенесена в следующую часть ===
 
