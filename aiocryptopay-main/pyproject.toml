@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "aiocryptopay"
+version = "0.4.8"
+description = "@cryptobot api asynchronous python wrapper"
+authors = ["layerqa"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/layerqa/aiocryptopay"
+documentation = "https://help.crypt.bot/crypto-pay-api"
+keywords = [
+    "aiocryptopay",
+    "cryptobot",
+    "cryptopay",
+    "cryptopay api",
+    "cryptobot api"
+]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+aiohttp = "^3.8.3"
+certifi = "^2023.5.7"
+strenum = "^0.4.10"
+pydantic = "^2.4.1"
+
+[tool.poetry.group.dev.dependencies]
+black = "^22.10.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
