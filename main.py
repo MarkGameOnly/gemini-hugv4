@@ -499,8 +499,7 @@ async def generate_text_logic(message: Message):
         await message.answer(f"📝 {text}")
 
         increment_usage(user_id)
-        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
-                       (user_id, "text", "вдохновляющая цитата"))
+        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "text", "вдохновляющая цитата"))
         conn.commit()
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации текста: {e}")
@@ -538,12 +537,12 @@ async def process_image_generation(message: Message, prompt: str):
                 else:
                     await message.answer("❌ Не удалось загрузить изображение с DALL-E")
 
-        cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
+        increment_usage(user_id)
         cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
         conn.commit()
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
-
+        
 # === Gemini AI + Примеры + Webhook ===
 
 @dp.message(F.text == "🌌 Gemini AI")
