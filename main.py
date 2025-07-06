@@ -49,25 +49,6 @@ def activate_subscription(user_id: int):
     )
     conn.commit()
 
-# === Webhook для CryptoBot ===
-crypto_router = APIRouter()
-
-@crypto_router.post("/cryptobot")
-async def cryptobot_webhook(request: Request):
-    try:
-        data = await request.json()
-        status = data.get("status")
-        payload = data.get("custom_payload")
-        user_id = int(payload) if payload and str(payload).isdigit() else 0
-
-        if status == "paid" and user_id:
-            activate_subscription(user_id)
-            print(f"✅ Подписка активирована для пользователя {user_id}")
-
-    except Exception as e:
-        print(f"❌ Ошибка Webhook CryptoBot: {e}")
-    return {"ok": True}
-
 # === Инициализация ===
 init_db()
 load_dotenv()
@@ -269,7 +250,7 @@ async def start_assistant(message: Message, state: FSMContext):
         "🧠 Помощник включен! Напишите ваш вопрос.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🛑 Остановить", callback_data="stop_assistant")],
+                [InlineKeyboardButton(text="🚑 Остановить", callback_data="stop_assistant")],
                 [InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]
             ]
         )
@@ -308,7 +289,7 @@ async def handle_assistant_message(message: Message, state: FSMContext):
         await message.answer(ai_reply)
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации ответа: {e}")
-
+        
 # === Генерация текста ===
 @dp.message(F.text == "✍️ Сгенерировать текст")
 async def handle_text_generation(message: Message, state: FSMContext):
@@ -484,7 +465,30 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
     await callback.answer()
 
 
-# === FastAPI Webhook + Lifespan ===
+# === Webhook от CryptoBot ===
+crypto_router = APIRouter()
+
+@crypto_router.post("/cryptobot")
+async def cryptobot_webhook(request: Request):
+    try:
+        data = await request.json()
+        print("🔔 Webhook от CryptoBot:", data)
+
+        if data.get("event") == "invoice_paid":
+            user_id = data.get("payload")
+            if user_id:
+                cursor.execute("UPDATE users SET is_subscribed = 1 WHERE user_id = ?", (user_id,))
+                conn.commit()
+                print(f"🔑 Подписка активирована для user_id={user_id}")
+                try:
+                    await bot.send_message(user_id, "🚀 Ваша подписка успешно активирована! Спасибо за поддержку проекта.")
+                except Exception as e:
+                    print(f"⛔ Не удалось отправить сообщение после оплаты: {e}")
+    except Exception as e:
+        print(f"❌ Ошибка Webhook CryptoBot: {e}")
+    return {"status": "ok"}
+    
+# === Webhook от Telegram (Amvera) ===
 router = APIRouter()
 
 @router.post("/webhook")
@@ -497,8 +501,7 @@ async def telegram_webhook(request: Request):
         logging.exception("Ошибка обработки апдейта: %s", e)
     return {"ok": True}
 
-from contextlib import asynccontextmanager
-
+# === Lifespan + FastAPI и роутеры ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     expected_url = f"{DOMAIN_URL}/webhook"
@@ -515,13 +518,12 @@ async def lifespan(app: FastAPI):
     ])
 
     asyncio.create_task(check_subscription_reminders())
-
     yield
-
     await session.close()
 
 app = FastAPI(lifespan=lifespan)
-app.include_router(router)
+app.include_router(router)         # Telegram Webhook
+app.include_router(crypto_router)  # CryptoBot Webhook
 
 @app.get("/")
 async def root():
