@@ -88,9 +88,9 @@ DOMAIN_URL = os.getenv("DOMAIN_URL")
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 storage = MemoryStorage()
-dp = Dispatcher(storage=storage)  # 👈 добавлено объявление dp
+dp = Dispatcher(bot=bot, storage=storage)  # ✅ добавлен bot в Dispatcher
 
-timeout = httpx.Timeout(30.0, connect=10.0)
+timeout = httpx.Timeout(60.0, connect=20.0)  # ⏱ увеличен таймаут для стабильности
 client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=timeout)
 
 # === Фоновая задача — напоминания о подписках ===
@@ -123,7 +123,7 @@ def main_menu() -> ReplyKeyboardMarkup:
     )
 
 # === Таймаут для скачивания изображений ===
-aiohttp_timeout = aiohttp.ClientTimeout(total=30)
+aiohttp_timeout = aiohttp.ClientTimeout(total=60)  # ⏱ увеличен таймаут
 
 # === Обновлённая функция скачивания изображений с DALL·E ===
 async def download_image(image_url: str) -> bytes:
