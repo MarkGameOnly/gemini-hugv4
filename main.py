@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, APIRouter
+from handlers import logic
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import (
@@ -23,7 +24,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from openai import AsyncOpenAI
 
 from crypto import create_invoice
-from handlers import logic
 
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
