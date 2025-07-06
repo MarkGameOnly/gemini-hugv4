@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, APIRouter
-
+import logic
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import (
     Message, BotCommand,
