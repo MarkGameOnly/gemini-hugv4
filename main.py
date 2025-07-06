@@ -288,14 +288,18 @@ async def stop_assistant(message: Message, state: FSMContext):
 
 @dp.message(AssistantState.chatting)
 async def handle_assistant_message(message: Message, state: FSMContext):
-    user_input = message.text
+    user_id = message.from_user.id
     await message.answer("⏳ Думаю...")
     try:
+        if str(user_id) != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+            await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
+            return
+
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "Ты умный Telegram-помощник, помогай кратко и понятно."},
-                {"role": "user", "content": user_input}
+                {"role": "user", "content": message.text}
             ],
             temperature=0.8,
             max_tokens=1024,
@@ -316,7 +320,7 @@ async def generate_text_logic(message: Message):
         user_id = message.from_user.id
         ensure_user(user_id)
 
-        if not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if str(user_id) != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
@@ -341,15 +345,18 @@ async def handle_image_prompt(message: Message, state: FSMContext):
 
 @dp.message(GenStates.await_image)
 async def generate_image(message: Message, state: FSMContext):
+    await process_image_generation(message, message.text)
+    await state.clear()
+
+async def process_image_generation(message: Message, prompt: str):
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
 
-        if not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if str(user_id) != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
-        prompt = message.text
         await message.answer("🧠 Генерирую изображение...")
 
         dalle = await client.images.generate(prompt=prompt, model="dall-e-3", n=1, size="1024x1024")
@@ -366,8 +373,6 @@ async def generate_image(message: Message, state: FSMContext):
         cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
         cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
         conn.commit()
-
-        await state.clear()
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
