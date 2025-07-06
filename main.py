@@ -117,6 +117,11 @@ def main_menu() -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
+# === Запуск фоновой задачи ===
+asyncio.create_task(check_subscription_reminders())
+
+# === Остальная логика перенесена в следующую часть ===
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
