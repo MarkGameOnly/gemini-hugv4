@@ -416,6 +416,7 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
         await handle_gemini_dialog(types.Message(message_id=callback.message.message_id, from_user=callback.from_user, text=prompt), state)
     await callback.answer()
 
+# === FastAPI Webhook + Lifespan ===
 router = APIRouter()
 
 @router.post("/webhook")
@@ -425,12 +426,8 @@ async def telegram_webhook(request: Request):
         update = types.Update(**data)
         await dp.feed_update(bot, update)
     except Exception as e:
-        logging.exception("\u274c Ошибка обработки апдейта: %s", e)
+        logging.exception("Ошибка обработки апдейта: %s", e)
     return {"ok": True}
-
-if not DOMAIN_URL:
-    logging.error("\u274c DOMAIN_URL не задан в .env")
-    raise RuntimeError("DOMAIN_URL is required")
 
 from contextlib import asynccontextmanager
 
@@ -449,7 +446,7 @@ async def lifespan(app: FastAPI):
         BotCommand(command="admin", description="⚙️ Админка")
     ])
 
-    asyncio.create_task(logic.check_subscription_reminders())
+    asyncio.create_task(check_subscription_reminders())  # ✅ Тут безопасно
 
     yield
 
@@ -461,4 +458,5 @@ app.include_router(router)
 @app.get("/")
 async def root():
     return {"status": "ok"}
+
 
