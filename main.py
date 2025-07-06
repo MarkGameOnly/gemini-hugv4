@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, APIRouter
 from contextlib import asynccontextmanager
 
+import aiohttp  # 👈 убедись, что библиотека установлена
+import httpx
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import (
     Message, BotCommand,
@@ -21,10 +24,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 
-import aiohttp
-import httpx
 from openai import AsyncOpenAI
-
 from crypto import create_invoice
 
 conn = sqlite3.connect("users.db", check_same_thread=False)
