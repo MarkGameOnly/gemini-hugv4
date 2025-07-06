@@ -3,6 +3,7 @@ import os
 import asyncio
 import random
 import logging
+logging.basicConfig(level=logging.INFO)
 import sqlite3
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -234,7 +235,7 @@ init_db()
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ADMIN_ID = os.getenv("ADMIN_ID", "1082828397")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 
 session = AiohttpSession()
@@ -452,7 +453,7 @@ async def handle_assistant_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
     await message.answer("⏳ Думаю...")
     try:
-        if str(user_id) != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if user_id != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
@@ -464,6 +465,7 @@ async def handle_assistant_message(message: Message, state: FSMContext):
             ],
             temperature=0.8,
             max_tokens=1024,
+            timeout=15.0
         )
         ai_reply = response.choices[0].message.content.strip()
         await message.answer(ai_reply)
@@ -473,6 +475,7 @@ async def handle_assistant_message(message: Message, state: FSMContext):
         conn.commit()
         log_user_action(user_id, "assistant_query", message.text)
     except Exception as e:
+        logging.error(f"❌ Ошибка в assistant: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка генерации ответа: {e}")
         
 # === Генерация текста ===
@@ -560,23 +563,25 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
     user_id = message.from_user.id
     ensure_user(user_id)
 
-    if str(user_id) != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+    if user_id != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
         await message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
         return
 
     try:
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": message.text}]
+            messages=[{"role": "user", "content": message.text}],
+            timeout=15.0
         )
         reply = response.choices[0].message.content
         await message.answer(reply)
 
-        if str(user_id) != ADMIN_ID:
+        if user_id != ADMIN_ID:
             increment_usage(user_id)
             cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "gemini", message.text))
             conn.commit()
     except Exception as e:
+        logging.error(f"❌ Ошибка в Gemini: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -650,8 +655,3 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
             )
             await handle_gemini_dialog(fake_msg, state)
     await callback.answer()
-    
-
-
-
-
