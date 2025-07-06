@@ -31,7 +31,27 @@ conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 FREE_USES_LIMIT = 10
 
+def init_db():
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        usage_count INTEGER DEFAULT 0,
+        subscribed INTEGER DEFAULT 0,
+        subscription_expires TEXT,
+        joined_at TEXT
+    )""")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        type TEXT,
+        prompt TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.commit()
+
 # === Вспомогательные функции ===
+
 def ensure_user(user_id: int):
     cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
     if not cursor.fetchone():
@@ -49,6 +69,166 @@ def activate_subscription(user_id: int):
     )
     conn.commit()
 
+def is_subscribed(user_id: int) -> bool:
+    cursor.execute("SELECT subscribed, subscription_expires FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    if result:
+        subscribed, expires = result
+        if subscribed and expires:
+            return datetime.strptime(expires, "%Y-%m-%d") >= datetime.now()
+    return False
+
+def get_usage_count(user_id: int) -> int:
+    cursor.execute("SELECT usage_count FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    return result[0] if result else 0
+
+def increment_usage(user_id: int):
+    cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+def save_quote(user_id: int, quote: str):
+    append_json(quotes_path, {
+        "user_id": user_id,
+        "quote": quote,
+        "timestamp": datetime.now().isoformat()
+    })
+
+def save_image_prompt(user_id: int, prompt: str, image_url: str):
+    append_json(images_path, {
+        "user_id": user_id,
+        "prompt": prompt,
+        "image_url": image_url,
+        "timestamp": datetime.now().isoformat()
+    })
+
+# === Работа с JSON ===
+import json
+from pathlib import Path
+
+data_dir = Path("data")
+data_dir.mkdir(exist_ok=True)
+
+quotes_path = data_dir / "quotes.json"
+images_path = data_dir / "images.json"
+payments_path = data_dir / "payments.json"
+logs_path = data_dir / "logs.json"
+
+# Автосоздание файлов при первом запуске
+for path in [quotes_path, images_path, payments_path, logs_path]:
+    if not path.exists():
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump([], f, ensure_ascii=False, indent=2)
+            print(f"✅ Файл {path.name} создан.")
+        except Exception as e:
+            print(f"❌ Ошибка при создании файла {path.name}: {e}")
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def append_json(path, record):
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data = []
+        data.append(record)
+        save_json(path, data)
+    except Exception as e:
+        print(f"❌ Ошибка при записи в {path.name}: {e}")
+
+def log_user_action(user_id, action, details):
+    append_json(logs_path, {
+        "user_id": user_id,
+        "action": action,
+        "details": details,
+        "timestamp": datetime.now().isoformat()
+    })
+
+def save_payment(user_id, invoice_id, amount):
+    append_json(payments_path, {
+        "user_id": user_id,
+        "invoice_id": invoice_id,
+        "amount": amount,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+# === Webhook от CryptoBot ===
+crypto_router = APIRouter()
+
+@crypto_router.post("/cryptobot")
+async def cryptobot_webhook(request: Request):
+    try:
+        data = await request.json()
+        print("🔔 Webhook от CryptoBot:", data)
+
+        if data.get("event") == "invoice_paid":
+            user_id = data.get("payload")
+            invoice_id = data.get("invoice_id")
+            amount = data.get("amount")
+
+            if user_id:
+                cursor.execute("UPDATE users SET subscribed = 1 WHERE user_id = ?", (user_id,))
+                conn.commit()
+                print(f"🔑 Подписка активирована для user_id={user_id}")
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "🚀 Ваша подписка успешно активирована! Спасибо за поддержку проекта."
+                    )
+                    save_payment(user_id, invoice_id, amount)
+                except Exception as e:
+                    print(f"⛔ Не удалось отправить сообщение после оплаты: {e}")
+
+    except Exception as e:
+        print(f"❌ Ошибка Webhook CryptoBot: {e}")
+
+    return {"status": "ok"}
+
+# === Webhook от Telegram (Amvera) ===
+router = APIRouter()
+
+@router.post("/webhook")
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        update = types.Update(**data)
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        logging.exception("Ошибка обработки апдейта: %s", e)
+    return {"ok": True}
+
+# === Lifespan + FastAPI и роутеры ===
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    expected_url = f"{DOMAIN_URL}/webhook"
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(expected_url)
+    logging.info(f"✅ Установлен webhook: {expected_url}")
+
+    await bot.set_my_commands([
+        BotCommand(command="start", description="🚀 Запуск бота"),
+        BotCommand(command="buy", description="💰 Купить подписку"),
+        BotCommand(command="profile", description="👤 Ваш профиль"),
+        BotCommand(command="help", description="📚 Как пользоваться?"),
+        BotCommand(command="admin", description="⚙️ Админка")
+    ])
+
+    asyncio.create_task(check_subscription_reminders())
+    yield
+    await session.close()
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)         # Telegram Webhook
+app.include_router(crypto_router)  # CryptoBot Webhook
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+    
 # === Инициализация ===
 init_db()
 load_dotenv()
@@ -287,6 +467,7 @@ async def handle_assistant_message(message: Message, state: FSMContext):
         )
         ai_reply = response.choices[0].message.content.strip()
         await message.answer(ai_reply)
+        log_user_action(user_id, "assistant_query", message.text)
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации ответа: {e}")
         
@@ -463,69 +644,8 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
             )
             await handle_gemini_dialog(fake_msg, state)
     await callback.answer()
-
-
-# === Webhook от CryptoBot ===
-crypto_router = APIRouter()
-
-@crypto_router.post("/cryptobot")
-async def cryptobot_webhook(request: Request):
-    try:
-        data = await request.json()
-        print("🔔 Webhook от CryptoBot:", data)
-
-        if data.get("event") == "invoice_paid":
-            user_id = data.get("payload")
-            if user_id:
-                cursor.execute("UPDATE users SET is_subscribed = 1 WHERE user_id = ?", (user_id,))
-                conn.commit()
-                print(f"🔑 Подписка активирована для user_id={user_id}")
-                try:
-                    await bot.send_message(user_id, "🚀 Ваша подписка успешно активирована! Спасибо за поддержку проекта.")
-                except Exception as e:
-                    print(f"⛔ Не удалось отправить сообщение после оплаты: {e}")
-    except Exception as e:
-        print(f"❌ Ошибка Webhook CryptoBot: {e}")
-    return {"status": "ok"}
     
-# === Webhook от Telegram (Amvera) ===
-router = APIRouter()
 
-@router.post("/webhook")
-async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-        update = types.Update(**data)
-        await dp.feed_update(bot, update)
-    except Exception as e:
-        logging.exception("Ошибка обработки апдейта: %s", e)
-    return {"ok": True}
 
-# === Lifespan + FastAPI и роутеры ===
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    expected_url = f"{DOMAIN_URL}/webhook"
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(expected_url)
-    logging.info(f"✅ Установлен webhook: {expected_url}")
 
-    await bot.set_my_commands([
-        BotCommand(command="start", description="🚀 Запуск бота"),
-        BotCommand(command="buy", description="💰 Купить подписку"),
-        BotCommand(command="profile", description="👤 Ваш профиль"),
-        BotCommand(command="help", description="📚 Как пользоваться?"),
-        BotCommand(command="admin", description="⚙️ Админка")
-    ])
-
-    asyncio.create_task(check_subscription_reminders())
-    yield
-    await session.close()
-
-app = FastAPI(lifespan=lifespan)
-app.include_router(router)         # Telegram Webhook
-app.include_router(crypto_router)  # CryptoBot Webhook
-
-@app.get("/")
-async def root():
-    return {"status": "ok"}
 
