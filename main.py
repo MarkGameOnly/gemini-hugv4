@@ -25,7 +25,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 
 from openai import AsyncOpenAI
-from crypto import create_invoice
+from crypto import create_invoice, check_invoice
 
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -41,41 +41,32 @@ def ensure_user(user_id: int):
         )
         conn.commit()
 
-def is_subscribed(user_id: int) -> bool:
-    cursor.execute("SELECT subscribed, subscription_expires FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    if not result:
-        return False
-    subscribed, expires = result
-    if not subscribed or not expires:
-        return False
-    return datetime.strptime(expires, "%Y-%m-%d") >= datetime.now()
-
-def get_usage_count(user_id: int) -> int:
-    cursor.execute("SELECT usage_count FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    return result[0] if result else 0
-
-def init_db():
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        usage_count INTEGER DEFAULT 0,
-        subscribed BOOLEAN DEFAULT 0,
-        subscription_expires TEXT,
-        joined_at TEXT
+def activate_subscription(user_id: int):
+    expires = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    cursor.execute(
+        "UPDATE users SET subscribed = 1, subscription_expires = ? WHERE user_id = ?",
+        (expires, user_id)
     )
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        type TEXT,
-        prompt TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
     conn.commit()
+
+# === Webhook для CryptoBot ===
+crypto_router = APIRouter()
+
+@crypto_router.post("/cryptobot")
+async def cryptobot_webhook(request: Request):
+    try:
+        data = await request.json()
+        status = data.get("status")
+        payload = data.get("custom_payload")
+        user_id = int(payload) if payload and str(payload).isdigit() else 0
+
+        if status == "paid" and user_id:
+            activate_subscription(user_id)
+            print(f"✅ Подписка активирована для пользователя {user_id}")
+
+    except Exception as e:
+        print(f"❌ Ошибка Webhook CryptoBot: {e}")
+    return {"ok": True}
 
 # === Инициализация ===
 init_db()
@@ -88,9 +79,9 @@ DOMAIN_URL = os.getenv("DOMAIN_URL")
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 storage = MemoryStorage()
-dp = Dispatcher(bot=bot, storage=storage)  # ✅ добавлен bot в Dispatcher
+dp = Dispatcher(bot=bot, storage=storage)
 
-timeout = httpx.Timeout(60.0, connect=20.0)  # ⏱ увеличен таймаут для стабильности
+timeout = httpx.Timeout(60.0, connect=20.0)
 client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=timeout)
 
 # === Фоновая задача — напоминания о подписках ===
@@ -114,7 +105,7 @@ class StateAssistant(StatesGroup):
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✍️ Сгенерировать текст"), KeyboardButton(text="🖼 Создать изображение")],
+            [KeyboardButton(text="✍️ Цитаты дня"), KeyboardButton(text="🖼 Создать изображение")],
             [KeyboardButton(text="🌌 Gemini AI"), KeyboardButton(text="🌠 Gemini Примеры")],
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💰 Купить подписку")],
             [KeyboardButton(text="📚 Как пользоваться?"), KeyboardButton(text="📎 Остальные проекты")]
@@ -123,7 +114,7 @@ def main_menu() -> ReplyKeyboardMarkup:
     )
 
 # === Таймаут для скачивания изображений ===
-aiohttp_timeout = aiohttp.ClientTimeout(total=60)  # ⏱ увеличен таймаут
+aiohttp_timeout = aiohttp.ClientTimeout(total=60)
 
 # === Обновлённая функция скачивания изображений с DALL·E ===
 async def download_image(image_url: str) -> bytes:
