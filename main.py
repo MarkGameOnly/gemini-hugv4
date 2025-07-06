@@ -7,7 +7,6 @@ import sqlite3
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, APIRouter
-from handlers import logic
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import (
@@ -29,6 +28,7 @@ conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 FREE_USES_LIMIT = 10
 
+# === Вспомогательные функции ===
 def ensure_user(user_id: int):
     cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
     if not cursor.fetchone():
@@ -74,8 +74,8 @@ def init_db():
     """)
     conn.commit()
 
+# === Инициализация ===
 init_db()
-
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -88,6 +88,7 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+# === Состояния ===
 class GenStates(StatesGroup):
     await_text = State()
     await_image = State()
@@ -98,6 +99,7 @@ class AssistantState(StatesGroup):
 class StateAssistant(StatesGroup):
     dialog = State()
 
+# === Главное меню ===
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -410,10 +412,17 @@ router = APIRouter()
 
 @router.post("/webhook")
 async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = types.Update(**data)
-    await dp.feed_update(bot, update)
+    try:
+        data = await request.json()
+        update = types.Update(**data)
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        logging.exception("\u274c Ошибка обработки апдейта: %s", e)
     return {"ok": True}
+
+if not DOMAIN_URL:
+    logging.error("\u274c DOMAIN_URL не задан в .env")
+    raise RuntimeError("DOMAIN_URL is required")
 
 from contextlib import asynccontextmanager
 
@@ -444,3 +453,4 @@ app.include_router(router)
 @app.get("/")
 async def root():
     return {"status": "ok"}
+
