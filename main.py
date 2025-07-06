@@ -467,6 +467,10 @@ async def handle_assistant_message(message: Message, state: FSMContext):
         )
         ai_reply = response.choices[0].message.content.strip()
         await message.answer(ai_reply)
+
+        increment_usage(user_id)
+        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "assistant", message.text))
+        conn.commit()
         log_user_action(user_id, "assistant_query", message.text)
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации ответа: {e}")
@@ -494,7 +498,9 @@ async def generate_text_logic(message: Message):
         text = response.choices[0].message.content.strip()
         await message.answer(f"📝 {text}")
 
-        cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
+        increment_usage(user_id)
+        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+                       (user_id, "text", "вдохновляющая цитата"))
         conn.commit()
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации текста: {e}")
@@ -568,11 +574,12 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         await message.answer(reply)
 
         if str(user_id) != ADMIN_ID:
-            cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
+            increment_usage(user_id)
             cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "gemini", message.text))
             conn.commit()
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+
 
 @dp.message(F.text == "🌠 Gemini Примеры")
 async def gemini_examples(message: Message, state: FSMContext):
