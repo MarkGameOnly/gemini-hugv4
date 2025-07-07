@@ -342,7 +342,7 @@ async def cmd_profile(message: Message):
     cursor.execute("SELECT usage_count, subscribed, subscription_expires FROM users WHERE user_id = ?", (user_id,))
     usage_count, subscribed, expires = cursor.fetchone()
 
-    if str(user_id) == ADMIN_ID:
+    if user_id == ADMIN_ID:
         sub_status = "🟢 Администратор — доступ всегда активен"
     elif subscribed and expires:
         expires_date = datetime.strptime(expires, "%Y-%m-%d").strftime("%d.%m.%Y")
