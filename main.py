@@ -54,6 +54,9 @@ def init_db():
 # === Вспомогательные функции ===
 
 def ensure_user(user_id: int):
+    """
+    Добавляет пользователя в базу, если его там ещё нет.
+    """
     cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
     if not cursor.fetchone():
         cursor.execute(
@@ -63,6 +66,9 @@ def ensure_user(user_id: int):
         conn.commit()
 
 def activate_subscription(user_id: int):
+    """
+    Активирует подписку на 30 дней.
+    """
     expires = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
     cursor.execute(
         "UPDATE users SET subscribed = 1, subscription_expires = ? WHERE user_id = ?",
@@ -71,6 +77,12 @@ def activate_subscription(user_id: int):
     conn.commit()
 
 def is_subscribed(user_id: int) -> bool:
+    """
+    Проверяет, активна ли подписка у пользователя.
+    Для администратора всегда возвращает True.
+    """
+    if str(user_id) == str(ADMIN_ID):
+        return True
     cursor.execute("SELECT subscribed, subscription_expires FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
     if result:
@@ -80,20 +92,36 @@ def is_subscribed(user_id: int) -> bool:
     return False
 
 def get_usage_count(user_id: int) -> int:
+    """
+    Возвращает количество генераций, сделанных пользователем.
+    """
     cursor.execute("SELECT usage_count FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
     return result[0] if result else 0
 
 def increment_usage(user_id: int):
+    """
+    Увеличивает счётчик генераций для обычных пользователей.
+    Администратор не учитывается.
+    """
+    if str(user_id) == str(ADMIN_ID):
+        return
     cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
     conn.commit()
 
 def is_limited(user_id: int) -> bool:
+    """
+    Проверяет, превысил ли пользователь лимит бесплатных генераций.
+    Администратор не имеет лимитов.
+    """
     if str(user_id) == str(ADMIN_ID):
         return False
     return not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT
 
 def save_quote(user_id: int, quote: str):
+    """
+    Сохраняет цитату пользователя в JSON.
+    """
     append_json(quotes_path, {
         "user_id": user_id,
         "quote": quote,
@@ -101,6 +129,9 @@ def save_quote(user_id: int, quote: str):
     })
 
 def save_image_prompt(user_id: int, prompt: str, image_url: str):
+    """
+    Сохраняет промпт и результат изображения в JSON.
+    """
     append_json(images_path, {
         "user_id": user_id,
         "prompt": prompt,
