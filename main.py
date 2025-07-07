@@ -334,6 +334,7 @@ async def how_to_use(message: Message):
     )
     await message.answer(text, parse_mode="HTML")
 
+# === Профиль пользователя ===
 @dp.message(Command("profile"))
 @dp.message(F.text == "👤 Профиль")
 async def cmd_profile(message: Message):
@@ -342,7 +343,7 @@ async def cmd_profile(message: Message):
     cursor.execute("SELECT usage_count, subscribed, subscription_expires FROM users WHERE user_id = ?", (user_id,))
     usage_count, subscribed, expires = cursor.fetchone()
 
-    if user_id == ADMIN_ID:
+    if str(user_id) == str(ADMIN_ID):
         sub_status = "🟢 Администратор — доступ всегда активен"
     elif subscribed and expires:
         expires_date = datetime.strptime(expires, "%Y-%m-%d").strftime("%d.%m.%Y")
@@ -351,7 +352,7 @@ async def cmd_profile(message: Message):
         sub_status = "🔴 Нет подписки"
 
     profile_text = (
-        f"🧾 Ваш ID: {user_id}\n"
+        f"🧓️ Ваш ID: {user_id}\n"
         f"📊 Генераций: {usage_count}\n"
         f"💼 Подписка: {sub_status}"
     )
@@ -360,15 +361,16 @@ async def cmd_profile(message: Message):
     cursor.execute("SELECT type, prompt, created_at FROM history WHERE user_id = ? ORDER BY created_at DESC LIMIT 10", (user_id,))
     rows = cursor.fetchall()
     if not rows:
-        await message.answer("📭 История пуста")
+        await message.answer("📜 История пуста")
     else:
         history_lines = [f"[{t}] {p[:40]}... ({c[:10]})" for t, p, c in rows]
-        await message.answer("🕘 Последние действия:\n" + "\n".join(history_lines))
+        await message.answer("🕒 Последние действия:\n" + "\n".join(history_lines))
 
+# === Админка ===
 @dp.message(Command("admin"))
-@dp.message(F.text == "📊 Админка")
+@dp.message(F.text == "📈 Админка")
 async def admin_panel(message: Message):
-    if str(message.from_user.id) != ADMIN_ID:
+    if str(message.from_user.id) != str(ADMIN_ID):
         await message.answer("❌ Доступ запрещён")
         return
 
@@ -392,21 +394,23 @@ async def admin_panel(message: Message):
     cursor.execute("SELECT COUNT(*) FROM users WHERE subscribed = 1")
     total_subs = cursor.fetchone()[0]
 
-    text = f"📈 Админка:\nПодписок активно: {total_subs}\n"
+    text = f"📊 Админка:\nПодписок активно: {total_subs}\n"
     text += "\n".join([f"{k}: {v}" for k, v in stats.items()])
     await message.answer(text)
 
-@dp.message(F.text == "📎 Остальные проекты")
+# === Остальные проекты ===
+@dp.message(F.text == "📌 Остальные проекты")
 async def project_links(message: Message):
     buttons = [
         [InlineKeyboardButton(text="🔗 It Market", url="https://t.me/Itmarket1_bot")],
         [InlineKeyboardButton(text="🎮 Игры с заработком", url="https://t.me/One1WinOfficial_bot")],
         [InlineKeyboardButton(text="📱 Мобильные прокси", url="https://t.me/Proxynumber_bot")],
-        [InlineKeyboardButton(text="🦁 УБТ Связки", url="https://t.me/LionMarket1_bot")],
+        [InlineKeyboardButton(text="🧑‍🤝УБТ Связки", url="https://t.me/LionMarket1_bot")],
         [InlineKeyboardButton(text="🌕 Криптомаркет", url="https://t.me/CryptoMoneyMark_bot")],
-        [InlineKeyboardButton(text="🎬 Фильмы и сериалы", url="https://t.me/RedirectIT_bot")],
+        [InlineKeyboardButton(text="🎮 Фильмы и сериалы", url="https://t.me/RedirectIT_bot")],
     ]
     await message.answer("🔗 Мои другие проекты:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
 
 @dp.message(Command("buy"))
 @dp.message(F.text == "💰 Купить подписку")
@@ -496,7 +500,7 @@ async def generate_text_logic(message: Message):
         user_id = message.from_user.id
         ensure_user(user_id)
 
-        if user_id != ADMIN_ID and is_limited(user_id):
+        if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
@@ -508,7 +512,7 @@ async def generate_text_logic(message: Message):
         text = response.choices[0].message.content.strip()
         await message.answer(f"📝 {text}")
 
-        if user_id != ADMIN_ID:
+        if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
             cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "text", "вдохновляющая цитата"))
             conn.commit()
@@ -522,20 +526,22 @@ async def handle_image_prompt(message: Message, state: FSMContext):
     await message.answer("🔼️ Напишите промпт для изображения")
 
 @dp.message(GenStates.await_image)
-async def process_image_generation(message: Message, prompt: str):
+async def process_image_generation(message: Message):
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
 
-        if user_id != ADMIN_ID and is_limited(user_id):
+        if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
+
+        prompt = message.text
 
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) < 3:
             await message.answer("❌ Промпт должен быть не короче 3 символов.")
             return
 
-        await message.answer("🧐 Генерирую изображение...")
+        await message.answer("🤔 Генерирую изображение...")
 
         dalle = await client.images.generate(prompt=prompt, model="dall-e-3", n=1, size="1024x1024")
         image_url = dalle.data[0].url
@@ -548,14 +554,13 @@ async def process_image_generation(message: Message, prompt: str):
                 else:
                     await message.answer("❌ Не удалось загрузить изображение.")
 
-        if user_id != ADMIN_ID:
+        if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
             cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
             conn.commit()
 
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
-
 
         
 # === Gemini AI + Примеры + Webhook ===
@@ -595,7 +600,6 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
     except Exception as e:
         logging.error(f"❌ Ошибка в Gemini: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
-
 
 # === Gemini Примеры и обработка ===
 
@@ -639,6 +643,14 @@ async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query()
 async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id: str = None):
+    user_id = callback.from_user.id
+    ensure_user(user_id)
+
+    if user_id != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        await callback.message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
+        await callback.answer()
+        return
+
     data_id = example_id or callback.data
     prompt_map = {
         "img_landscape": "Пейзаж на закате, горы, озеро, 8K realism",
