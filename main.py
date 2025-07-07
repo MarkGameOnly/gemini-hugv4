@@ -88,6 +88,11 @@ def increment_usage(user_id: int):
     cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
     conn.commit()
 
+def is_limited(user_id: int) -> bool:
+    if str(user_id) == str(ADMIN_ID):
+        return False
+    return not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT
+
 def save_quote(user_id: int, quote: str):
     append_json(quotes_path, {
         "user_id": user_id,
@@ -452,8 +457,9 @@ async def stop_assistant(message: Message, state: FSMContext):
 async def handle_assistant_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
     await message.answer("⏳ Думаю...")
+
     try:
-        if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
@@ -465,7 +471,7 @@ async def handle_assistant_message(message: Message, state: FSMContext):
             ],
             temperature=0.8,
             max_tokens=1024,
-            timeout=15.0
+            timeout=30.0
         )
         ai_reply = response.choices[0].message.content.strip()
         await message.answer(ai_reply)
@@ -474,22 +480,23 @@ async def handle_assistant_message(message: Message, state: FSMContext):
         cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "assistant", message.text))
         conn.commit()
         log_user_action(user_id, "assistant_query", message.text)
+
     except Exception as e:
         logging.error(f"❌ Ошибка в assistant: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка генерации ответа: {e}")
-        
+
 # === Генерация текста ===
 @dp.message(F.text == "✍️ Сгенерировать текст")
 async def handle_text_generation(message: Message, state: FSMContext):
     await message.answer("🔄 Генерация текста началась. Пожалуйста, подождите...")
-    asyncio.create_task(generate_text_logic(message))
+    await generate_text_logic(message)
 
 async def generate_text_logic(message: Message):
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
 
-        if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if user_id != ADMIN_ID and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
@@ -501,50 +508,55 @@ async def generate_text_logic(message: Message):
         text = response.choices[0].message.content.strip()
         await message.answer(f"📝 {text}")
 
-        increment_usage(user_id)
-        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "text", "вдохновляющая цитата"))
-        conn.commit()
+        if user_id != ADMIN_ID:
+            increment_usage(user_id)
+            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "text", "вдохновляющая цитата"))
+            conn.commit()
     except Exception as e:
         await message.answer(f"❌ Ошибка генерации текста: {e}")
 
 # === Генерация изображения ===
-@dp.message(F.text == "🖼 Создать изображение")
+@dp.message(F.text == "🖼 Создайте изображение")
 async def handle_image_prompt(message: Message, state: FSMContext):
     await state.set_state(GenStates.await_image)
     await message.answer("🔼️ Напишите промпт для изображения")
 
 @dp.message(GenStates.await_image)
-async def generate_image(message: Message, state: FSMContext):
-    await process_image_generation(message, message.text)
-    await state.clear()
-
 async def process_image_generation(message: Message, prompt: str):
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
 
-        if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if user_id != ADMIN_ID and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
-        await message.answer("🧠 Генерирую изображение...")
+        if not prompt or not isinstance(prompt, str) or len(prompt.strip()) < 3:
+            await message.answer("❌ Промпт должен быть не короче 3 символов.")
+            return
+
+        await message.answer("🧐 Генерирую изображение...")
 
         dalle = await client.images.generate(prompt=prompt, model="dall-e-3", n=1, size="1024x1024")
         image_url = dalle.data[0].url
 
-        async with aiohttp.ClientSession() as s:
-            async with s.get(image_url) as resp:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as resp:
                 if resp.status == 200:
                     image_bytes = await resp.read()
                     await message.answer_photo(types.BufferedInputFile(image_bytes, filename="image.png"))
                 else:
-                    await message.answer("❌ Не удалось загрузить изображение с DALL-E")
+                    await message.answer("❌ Не удалось загрузить изображение.")
 
-        increment_usage(user_id)
-        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
-        conn.commit()
+        if user_id != ADMIN_ID:
+            increment_usage(user_id)
+            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
+            conn.commit()
+
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+
+
         
 # === Gemini AI + Примеры + Webhook ===
 
@@ -585,6 +597,8 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {e}")
 
 
+# === Gemini Примеры и обработка ===
+
 @dp.message(F.text == "🌠 Gemini Примеры")
 async def gemini_examples(message: Message, state: FSMContext):
     examples = [
@@ -604,8 +618,8 @@ async def gemini_examples(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="➔ Новый запрос", callback_data="new_query")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]
     ]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=examples)
-    await message.answer("🌠 Выберите пример или задайте свой вопрос:", reply_markup=keyboard)
+    await message.answer("\ud83c\udf20 Выберите пример или задайте свой вопрос:",
+                         reply_markup=InlineKeyboardMarkup(inline_keyboard=examples))
     await state.set_state(StateAssistant.dialog)
 
 @dp.callback_query(F.data == "random_example")
@@ -624,7 +638,7 @@ async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query()
-async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id=None):
+async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id: str = None):
     data_id = example_id or callback.data
     prompt_map = {
         "img_landscape": "Пейзаж на закате, горы, озеро, 8K realism",
@@ -641,17 +655,20 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
         "prompt_example": "Придумай интересный промпт для изображения суперкара"
     }
     prompt = prompt_map.get(data_id)
-    if prompt:
-        if data_id.startswith("img_"):
-            await process_image_generation(callback.message, prompt)
-        else:
-            fake_msg = types.Message(
-                message_id=callback.message.message_id,
-                date=callback.message.date,
-                chat=callback.message.chat,
-                from_user=callback.from_user,
-                message_thread_id=callback.message.message_thread_id,
-                text=prompt
-            )
-            await handle_gemini_dialog(fake_msg, state)
+    if not prompt:
+        await callback.answer("❌ Пример не найден", show_alert=True)
+        return
+
+    if data_id.startswith("img_"):
+        await process_image_generation(callback.message, prompt)
+    else:
+        fake_msg = types.Message(
+            message_id=callback.message.message_id,
+            date=callback.message.date,
+            chat=callback.message.chat,
+            from_user=callback.from_user,
+            message_thread_id=callback.message.message_thread_id,
+            text=prompt
+        )
+        await handle_gemini_dialog(fake_msg, state)
     await callback.answer()
