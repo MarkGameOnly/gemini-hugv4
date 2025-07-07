@@ -453,7 +453,7 @@ async def handle_assistant_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
     await message.answer("⏳ Думаю...")
     try:
-        if user_id != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
@@ -489,7 +489,7 @@ async def generate_text_logic(message: Message):
         user_id = message.from_user.id
         ensure_user(user_id)
 
-        if str(user_id) != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
@@ -523,7 +523,7 @@ async def process_image_generation(message: Message, prompt: str):
         user_id = message.from_user.id
         ensure_user(user_id)
 
-        if str(user_id) != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
