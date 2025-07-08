@@ -1,0 +1,4 @@
+entrypoint: python3 admin_bot.py
+env:
+  - ADMIN_BOT_TOKEN
+  - DOMAIN_URL
