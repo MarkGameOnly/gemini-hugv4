@@ -1,9 +1,8 @@
 # === Импорты стандартных библиотек ===
 import os
 import asyncio
-import logging
-import re
 import random
+import logging
 import sqlite3
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, APIRouter, Response
@@ -764,7 +763,12 @@ async def generate_text_logic(message: Message):
 
 
 # === Генерация изображения ===
-@dp.message(F.text.regexp(r"(создать|создайте)\s+изображение|🖼|🔼", flags=re.IGNORECASE))
+@dp.message(F.text.in_([
+    "🖼 Создать изображение",
+    "🔼 Создайте изображение",
+    "создать изображение",
+    "Создайте изображение"
+]))
 async def handle_image_prompt(message: Message, state: FSMContext):
     await state.set_state(GenStates.await_image)
     await message.answer("🖼 Введите промпт для изображения:")
