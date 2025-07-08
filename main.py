@@ -245,7 +245,8 @@ def save_payment(user_id, invoice_id, amount):
         "timestamp": datetime.now().isoformat()
     })
     
-# === Webhook от CryptoBot ===
+# === Webhook CryptoBot ===
+crypto_router = APIRouter()
 @crypto_router.post("/cryptobot", response_class=JSONResponse)
 async def cryptobot_webhook(request: Request):
     try:
@@ -253,13 +254,14 @@ async def cryptobot_webhook(request: Request):
         logging.info(f"🔔 Webhook от CryptoBot: {data}")
         if data.get("status") == "paid":
             user_id = int(data["order_id"])
+            logging.info(f"✅ Платёж подтверждён. Активация подписки для {user_id}")
             activate_subscription(user_id)
-            logging.info(f"✅ Подписка активирована для user_id={user_id}")
     except Exception as e:
         logging.error(f"❌ Ошибка Webhook CryptoBot: {e}", exc_info=True)
     return JSONResponse(content={"status": "ok"}, media_type="application/json")
 
 # === Webhook от Telegram (Amvera) ===
+router = APIRouter()
 @router.post("/webhook", response_class=JSONResponse)
 async def telegram_webhook(request: Request):
     try:
@@ -267,14 +269,15 @@ async def telegram_webhook(request: Request):
         update = types.Update(**data)
         await dp.feed_update(bot, update)
     except Exception as e:
-        logging.exception("Ошибка обработки апдейта: %s", e)
+        logging.exception("Ошибка обработки апдейта")
     return JSONResponse(content={"ok": True}, media_type="application/json")
 
-# === Очистка старых логов при старте (если слишком большие) ===
+# === Очистка логов при запуске, если большие ===
 for log_file in ["webhook.log", "errors.log"]:
     if os.path.exists(log_file) and os.path.getsize(log_file) > 5_000_000:
         with open(log_file, "w", encoding="utf-8") as f:
-            f.write(f"🚫 Старый лог {log_file} был очищен: {datetime.now()}\n")
+            f.write(f"⚠️ Автоочистка лога {log_file}: {datetime.now()}\n")
+
 
 reminder_task_started = False  # глобальный флаг вне lifespan
 
@@ -462,46 +465,86 @@ async def admin_panel(message: Message):
 
     await message.answer(text, parse_mode="HTML")
 
-# === Кнопка админки с логами ===
+# === Админские кнопки ===
 def admin_inline_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 Логи", callback_data="view_logs")],
-        [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")],
-        [InlineKeyboardButton(text="❗ Ошибки", callback_data="view_errors")]
+        [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")]
     ])
-# === Команда /logs — просмотр webhook.log (только для админа) ===
+
+# === Команда /admin ===
+@dp.message(Command("admin"))
+async def admin_panel(message: Message):
+    user_id = message.from_user.id
+    if user_id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён")
+        return
+
+    today = datetime.now().date()
+    def count_since(date):
+        cursor.execute("SELECT COUNT(*) FROM users WHERE joined_at >= ?", (date.strftime("%Y-%m-%d"),))
+        return cursor.fetchone()[0]
+
+    stats = {
+        "Всего": count_since(datetime(1970, 1, 1)),
+        "Сегодня": count_since(today),
+        "Неделя": count_since(today - timedelta(days=7)),
+        "Месяц": count_since(today - timedelta(days=30)),
+        "Год": count_since(today - timedelta(days=365))
+    }
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE subscribed = 1")
+    total_subs = cursor.fetchone()[0]
+
+    text = f"📊 <b>Админка:</b>\n<b>Подписок активно:</b> {total_subs}\n\n"
+    text += "\n".join([f"<b>{k}:</b> {v}" for k, v in stats.items()])
+
+    await message.answer(text, reply_markup=admin_inline_keyboard(), parse_mode="HTML")
+
+# === /logs команда ===
 @dp.message(Command("logs"))
 async def show_logs(message: Message):
-    if str(message.from_user.id) != str(ADMIN_ID):
+    if message.from_user.id != ADMIN_ID:
         await message.answer("❌ Доступ запрещён")
         return
-    await send_log_file(message, "webhook.log")
+    try:
+        with open("webhook.log", "r", encoding="utf-8") as f:
+            content = f.readlines()
+        last_lines = content[-50:] if len(content) > 50 else content
+        await message.answer("<code>{}</code>".format("".join(last_lines)), parse_mode="HTML")
+    except Exception as e:
+        logging.error("Ошибка /logs", exc_info=True)
+        await message.answer(f"❌ Ошибка чтения логов: {e}")
 
-# === Команда /errors — просмотр errors.log (только для админа) ===
+# === /errors команда ===
 @dp.message(Command("errors"))
 async def show_errors(message: Message):
-    if str(message.from_user.id) != str(ADMIN_ID):
+    if message.from_user.id != ADMIN_ID:
         await message.answer("❌ Доступ запрещён")
         return
-    await send_log_file(message, "errors.log")
+    try:
+        with open("errors.log", "r", encoding="utf-8") as f:
+            content = f.readlines()
+        last_lines = content[-50:] if len(content) > 50 else content
+        await message.answer("<code>{}</code>".format("".join(last_lines)), parse_mode="HTML")
+    except Exception as e:
+        logging.error("Ошибка /errors", exc_info=True)
+        await message.answer(f"❌ Ошибка чтения ошибок: {e}")
 
-# === Обработка кнопки логов ===
+# === Callback кнопок админки ===
 @dp.callback_query(F.data == "view_logs")
-async def callback_view_logs(callback: types.CallbackQuery):
-    await send_log_file(callback.message, "webhook.log")
-    await callback.answer()
-
-@dp.callback_query(F.data == "view_errors")
-async def callback_view_errors(callback: types.CallbackQuery):
-    await send_log_file(callback.message, "errors.log")
+async def cb_view_logs(callback: types.CallbackQuery):
+    await show_logs(callback.message)
     await callback.answer()
 
 @dp.callback_query(F.data == "clear_logs")
-async def callback_clear_logs(callback: types.CallbackQuery):
-    for file in ["webhook.log", "errors.log"]:
-        with open(file, "w", encoding="utf-8") as f:
-            f.write(f"🧹 Очищено вручную: {datetime.now()}\n")
-    await callback.message.answer("🧹 Логи успешно очищены.")
+async def cb_clear_logs(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+    open("webhook.log", "w", encoding="utf-8").close()
+    open("errors.log", "w", encoding="utf-8").close()
+    await callback.message.answer("🧹 Логи очищены")
     await callback.answer()
 
 # === Утилита логов ===
