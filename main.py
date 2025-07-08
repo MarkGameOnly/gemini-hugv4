@@ -1,17 +1,17 @@
-# === Часть 1: Импорты, init, FSM, меню ===
+# === Импорты стандартных библиотек ===
 import os
 import asyncio
 import random
 import logging
-logging.basicConfig(level=logging.INFO)
 import sqlite3
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
-ADMIN_ID = None
-from fastapi import FastAPI, Request, APIRouter
+from fastapi import FastAPI, Request, APIRouter, Response
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
-import aiohttp  # 👈 убедись, что библиотека установлена
+# === Импорты сторонних библиотек ===
+from dotenv import load_dotenv
+import aiohttp
 import httpx
 
 from aiogram import Bot, Dispatcher, F, types
@@ -25,32 +25,83 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
-
+from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from openai import AsyncOpenAI
 from crypto import create_invoice, check_invoice
 
+# === Настройка логирования ===
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("webhook.log", encoding="utf-8"),
+        logging.FileHandler("errors.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+
+# === Загрузка переменных окружения ===
+load_dotenv()
+
+# === Получение переменных из .env ===
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DOMAIN_URL = os.getenv("DOMAIN_URL")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
+print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")
+
+# === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 FREE_USES_LIMIT = 10
 
 def init_db():
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        usage_count INTEGER DEFAULT 0,
-        subscribed INTEGER DEFAULT 0,
-        subscription_expires TEXT,
-        joined_at TEXT
-    )""")
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            usage_count INTEGER DEFAULT 0,
+            subscribed INTEGER DEFAULT 0,
+            subscription_expires TEXT,
+            joined_at TEXT
+        )
+    """)
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        type TEXT,
-        prompt TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )""")
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            type TEXT,
+            prompt TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
+
+init_db()
+
+# === Middleware для автоматического ensure_user ===
+class EnsureUserMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if isinstance(event, types.Message) or isinstance(event, types.CallbackQuery):
+            user_id = event.from_user.id
+            cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+            if not cursor.fetchone():
+                cursor.execute(
+                    "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 0, NULL, ?)",
+                    (user_id, datetime.now().strftime("%Y-%m-%d"))
+                )
+                conn.commit()
+        return await handler(event, data)
+    
+# === Инициализация Telegram бота и OpenAI клиента ===
+session = AiohttpSession()
+bot = Bot(token=BOT_TOKEN, session=session)
+storage = MemoryStorage()
+dp = Dispatcher(bot=bot, storage=storage)
+dp.message.middleware(EnsureUserMiddleware())
+dp.callback_query.middleware(EnsureUserMiddleware())
+
+timeout = httpx.Timeout(60.0, connect=20.0)
+client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=timeout)
 
 # === Вспомогательные функции ===
 
@@ -195,41 +246,21 @@ def save_payment(user_id, invoice_id, amount):
     })
     
 # === Webhook от CryptoBot ===
-crypto_router = APIRouter()
-
-@crypto_router.post("/cryptobot")
+@crypto_router.post("/cryptobot", response_class=JSONResponse)
 async def cryptobot_webhook(request: Request):
     try:
         data = await request.json()
-        print("🔔 Webhook от CryptoBot:", data)
-
-        if data.get("event") == "invoice_paid":
-            user_id = data.get("payload")
-            invoice_id = data.get("invoice_id")
-            amount = data.get("amount")
-
-            if user_id:
-                cursor.execute("UPDATE users SET subscribed = 1 WHERE user_id = ?", (user_id,))
-                conn.commit()
-                print(f"🔑 Подписка активирована для user_id={user_id}")
-                try:
-                    await bot.send_message(
-                        user_id,
-                        "🚀 Ваша подписка успешно активирована! Спасибо за поддержку проекта."
-                    )
-                    save_payment(user_id, invoice_id, amount)
-                except Exception as e:
-                    print(f"⛔ Не удалось отправить сообщение после оплаты: {e}")
-
+        logging.info(f"🔔 Webhook от CryptoBot: {data}")
+        if data.get("status") == "paid":
+            user_id = int(data["order_id"])
+            activate_subscription(user_id)
+            logging.info(f"✅ Подписка активирована для user_id={user_id}")
     except Exception as e:
-        print(f"❌ Ошибка Webhook CryptoBot: {e}")
-
-    return {"status": "ok"}
+        logging.error(f"❌ Ошибка Webhook CryptoBot: {e}", exc_info=True)
+    return JSONResponse(content={"status": "ok"}, media_type="application/json")
 
 # === Webhook от Telegram (Amvera) ===
-router = APIRouter()
-
-@router.post("/webhook")
+@router.post("/webhook", response_class=JSONResponse)
 async def telegram_webhook(request: Request):
     try:
         data = await request.json()
@@ -237,9 +268,14 @@ async def telegram_webhook(request: Request):
         await dp.feed_update(bot, update)
     except Exception as e:
         logging.exception("Ошибка обработки апдейта: %s", e)
-    return {"ok": True}
+    return JSONResponse(content={"ok": True}, media_type="application/json")
 
-# === Lifespan + FastAPI и роутеры ===
+# === Очистка старых логов при старте (если слишком большие) ===
+for log_file in ["webhook.log", "errors.log"]:
+    if os.path.exists(log_file) and os.path.getsize(log_file) > 5_000_000:
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(f"🚫 Старый лог {log_file} был очищен: {datetime.now()}\n")
+
 reminder_task_started = False  # глобальный флаг вне lifespan
 
 @asynccontextmanager
@@ -267,7 +303,7 @@ async def lifespan(app: FastAPI):
 
     yield
     await session.close()
-    
+
 app = FastAPI(lifespan=lifespan)
 app.include_router(router)         # Telegram Webhook
 app.include_router(crypto_router)  # CryptoBot Webhook
@@ -275,26 +311,6 @@ app.include_router(crypto_router)  # CryptoBot Webhook
 @app.get("/")
 async def root():
     return {"status": "ok"}
-    
-# === Инициализация ===
-load_dotenv()  # Сначала загружаем переменные
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))  # ← теперь загружается
-DOMAIN_URL = os.getenv("DOMAIN_URL")
-
-print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")  # ← и только теперь печатаем
-
-init_db()  # ← можно вызывать
-
-session = AiohttpSession()
-bot = Bot(token=BOT_TOKEN, session=session)
-storage = MemoryStorage()
-dp = Dispatcher(bot=bot, storage=storage)
-
-timeout = httpx.Timeout(60.0, connect=20.0)
-client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=timeout)
 
 # === Фоновая задача — напоминания о подписках ===
 async def check_subscription_reminders():
@@ -413,18 +429,14 @@ async def cmd_profile(message: Message):
 
 # === Админка ===
 @dp.message(Command("admin"))
-@dp.message(F.text == "📈 Админка")
 async def admin_panel(message: Message):
-    user_id = str(message.from_user.id)
-    admin_id_str = str(ADMIN_ID)
+    logging.info(f"👤 Запрос на админку от: {message.from_user.id}")
 
-    # Лог для отладки
-    print(f"🔐 Проверка доступа к админке: user_id={user_id} vs ADMIN_ID={admin_id_str}")
-
-    if user_id != admin_id_str:
+    if message.from_user.id != ADMIN_ID:
         await message.answer("❌ Доступ запрещён")
         return
 
+    # ✅ Проверка прошла
     today = datetime.now().date()
     week_ago = today - timedelta(days=7)
     month_ago = today - timedelta(days=30)
@@ -450,6 +462,67 @@ async def admin_panel(message: Message):
 
     await message.answer(text, parse_mode="HTML")
 
+# === Кнопка админки с логами ===
+def admin_inline_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📜 Логи", callback_data="view_logs")],
+        [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")],
+        [InlineKeyboardButton(text="❗ Ошибки", callback_data="view_errors")]
+    ])
+# === Команда /logs — просмотр webhook.log (только для админа) ===
+@dp.message(Command("logs"))
+async def show_logs(message: Message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        await message.answer("❌ Доступ запрещён")
+        return
+    await send_log_file(message, "webhook.log")
+
+# === Команда /errors — просмотр errors.log (только для админа) ===
+@dp.message(Command("errors"))
+async def show_errors(message: Message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        await message.answer("❌ Доступ запрещён")
+        return
+    await send_log_file(message, "errors.log")
+
+# === Обработка кнопки логов ===
+@dp.callback_query(F.data == "view_logs")
+async def callback_view_logs(callback: types.CallbackQuery):
+    await send_log_file(callback.message, "webhook.log")
+    await callback.answer()
+
+@dp.callback_query(F.data == "view_errors")
+async def callback_view_errors(callback: types.CallbackQuery):
+    await send_log_file(callback.message, "errors.log")
+    await callback.answer()
+
+@dp.callback_query(F.data == "clear_logs")
+async def callback_clear_logs(callback: types.CallbackQuery):
+    for file in ["webhook.log", "errors.log"]:
+        with open(file, "w", encoding="utf-8") as f:
+            f.write(f"🧹 Очищено вручную: {datetime.now()}\n")
+    await callback.message.answer("🧹 Логи успешно очищены.")
+    await callback.answer()
+
+# === Утилита логов ===
+async def send_log_file(message: Message, filename: str):
+    try:
+        if not os.path.exists(filename):
+            await message.answer("📭 Лог-файл отсутствует.")
+            return
+
+        with open(filename, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        if len(content) > 4000:
+            lines = content.strip().split("\n")
+            last_lines = "\n".join(lines[-50:])
+            await message.answer(f"<code>{last_lines}</code>", parse_mode="HTML")
+        else:
+            await message.answer(f"<code>{content}</code>", parse_mode="HTML")
+    except Exception as e:
+        logging.exception(f"Ошибка отправки {filename}")
+        await message.answer(f"❌ Ошибка чтения логов: {e}")
 
 # === Остальные проекты ===
 @dp.message(F.text == "📌 Остальные проекты")
@@ -582,16 +655,15 @@ async def handle_image_prompt(message: Message, state: FSMContext):
     await message.answer("🔼️ Напишите промпт для изображения")
 
 @dp.message(GenStates.await_image)
-async def process_image_generation(message: Message):
+# === Обновление функции process_image_generation ===
+async def process_image_generation(message: Message, prompt: str = None):
     try:
         user_id = message.from_user.id
-        ensure_user(user_id)
+        prompt = prompt or message.text
 
         if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
-
-        prompt = message.text
 
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) < 3:
             await message.answer("❌ Промпт должен быть не короче 3 символов.")
@@ -601,6 +673,10 @@ async def process_image_generation(message: Message):
 
         dalle = await client.images.generate(prompt=prompt, model="dall-e-3", n=1, size="1024x1024")
         image_url = dalle.data[0].url
+
+        if not image_url:
+            await message.answer("❌ Не удалось получить изображение.")
+            return
 
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url) as resp:
