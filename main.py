@@ -429,6 +429,7 @@ async def admin_panel(message: Message):
     text += "\n".join([f"{k}: {v}" for k, v in stats.items()])
     await message.answer(text)
 
+
 # === Остальные проекты ===
 @dp.message(F.text == "📌 Остальные проекты")
 async def project_links(message: Message):
@@ -491,10 +492,11 @@ async def stop_assistant(message: Message, state: FSMContext):
 @dp.message(AssistantState.chatting)
 async def handle_assistant_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
+    ensure_user(user_id)
     await message.answer("⏳ Думаю...")
 
     try:
-        if is_limited(user_id):
+        if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
@@ -511,14 +513,16 @@ async def handle_assistant_message(message: Message, state: FSMContext):
         ai_reply = response.choices[0].message.content.strip()
         await message.answer(ai_reply)
 
-        increment_usage(user_id)
-        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "assistant", message.text))
-        conn.commit()
-        log_user_action(user_id, "assistant_query", message.text)
+        if str(user_id) != str(ADMIN_ID):
+            increment_usage(user_id)
+            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "assistant", message.text))
+            conn.commit()
+            log_user_action(user_id, "assistant_query", message.text)
 
     except Exception as e:
         logging.error(f"❌ Ошибка в assistant: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка генерации ответа: {e}")
+
 
 # === Генерация текста ===
 @dp.message(F.text == "✍️ Сгенерировать текст")
@@ -551,7 +555,7 @@ async def generate_text_logic(message: Message):
         await message.answer(f"❌ Ошибка генерации текста: {e}")
 
 # === Генерация изображения ===
-@dp.message(F.text == "🖼 Создайте изображение")
+@dp.message(F.text == "🔼 Создайте изображение")
 async def handle_image_prompt(message: Message, state: FSMContext):
     await state.set_state(GenStates.await_image)
     await message.answer("🔼️ Напишите промпт для изображения")
@@ -611,7 +615,7 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
     user_id = message.from_user.id
     ensure_user(user_id)
 
-    if user_id != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+    if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
         await message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
         return
 
@@ -624,7 +628,7 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         reply = response.choices[0].message.content
         await message.answer(reply)
 
-        if user_id != ADMIN_ID:
+        if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
             cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "gemini", message.text))
             conn.commit()
@@ -653,7 +657,7 @@ async def gemini_examples(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="➔ Новый запрос", callback_data="new_query")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]
     ]
-    await message.answer("\ud83c\udf20 Выберите пример или задайте свой вопрос:",
+    await message.answer("\U0001f320 Выберите пример или задайте свой вопрос:",
                          reply_markup=InlineKeyboardMarkup(inline_keyboard=examples))
     await state.set_state(StateAssistant.dialog)
 
@@ -668,17 +672,19 @@ async def gemini_random_example(callback: types.CallbackQuery, state: FSMContext
 
 @dp.callback_query(F.data == "new_query")
 async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("✏️ Введите свой вопрос или тему")
+    bot = callback.bot
+    await bot.send_message(callback.from_user.id, "✏️ Введите свой вопрос или тему")
     await state.set_state(StateAssistant.dialog)
     await callback.answer()
 
 @dp.callback_query()
 async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id: str = None):
+    bot = callback.bot
     user_id = callback.from_user.id
     ensure_user(user_id)
 
-    if user_id != ADMIN_ID and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
-        await callback.message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
+    if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        await bot.send_message(callback.from_user.id, "🔒 Лимит исчерпан. Купите подписку 💰")
         await callback.answer()
         return
 
