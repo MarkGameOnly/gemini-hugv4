@@ -240,8 +240,12 @@ async def telegram_webhook(request: Request):
     return {"ok": True}
 
 # === Lifespan + FastAPI и роутеры ===
+reminder_task_started = False  # глобальный флаг вне lifespan
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global reminder_task_started
+
     expected_url = f"{DOMAIN_URL}/webhook"
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(expected_url)
@@ -255,10 +259,15 @@ async def lifespan(app: FastAPI):
         BotCommand(command="admin", description="⚙️ Админка")
     ])
 
-    asyncio.create_task(check_subscription_reminders())
+    # 🛡️ Запускаем только один раз
+    if not reminder_task_started:
+        asyncio.create_task(check_subscription_reminders())
+        reminder_task_started = True
+        logging.info("⏰ Задача напоминаний о подписках запущена.")
+
     yield
     await session.close()
-
+    
 app = FastAPI(lifespan=lifespan)
 app.include_router(router)         # Telegram Webhook
 app.include_router(crypto_router)  # CryptoBot Webhook
