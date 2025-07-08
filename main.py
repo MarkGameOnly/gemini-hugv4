@@ -406,7 +406,13 @@ async def cmd_profile(message: Message):
 @dp.message(Command("admin"))
 @dp.message(F.text == "📈 Админка")
 async def admin_panel(message: Message):
-    if str(message.from_user.id) != str(ADMIN_ID):
+    user_id = str(message.from_user.id)
+    admin_id_str = str(ADMIN_ID)
+
+    # Лог для отладки
+    print(f"🔐 Проверка доступа к админке: user_id={user_id} vs ADMIN_ID={admin_id_str}")
+
+    if user_id != admin_id_str:
         await message.answer("❌ Доступ запрещён")
         return
 
@@ -430,9 +436,10 @@ async def admin_panel(message: Message):
     cursor.execute("SELECT COUNT(*) FROM users WHERE subscribed = 1")
     total_subs = cursor.fetchone()[0]
 
-    text = f"📊 Админка:\nПодписок активно: {total_subs}\n"
-    text += "\n".join([f"{k}: {v}" for k, v in stats.items()])
-    await message.answer(text)
+    text = f"📊 <b>Админка:</b>\n<b>Подписок активно:</b> {total_subs}\n\n"
+    text += "\n".join([f"<b>{k}:</b> {v}" for k, v in stats.items()])
+
+    await message.answer(text, parse_mode="HTML")
 
 
 # === Остальные проекты ===
