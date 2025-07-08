@@ -1,9 +1,9 @@
 # === Импорты стандартных библиотек ===
 import os
 import asyncio
-import random
-import re
 import logging
+import re
+import random
 import sqlite3
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, APIRouter, Response
