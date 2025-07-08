@@ -25,6 +25,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.utils.markdown import hbold
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from openai import AsyncOpenAI
 from crypto import create_invoice, check_invoice
@@ -624,7 +625,7 @@ async def alias_admin_panel(message: Message):
 
 
 # === Остальные проекты ===
-@dp.message(F.text == "📌 Остальные проекты")
+@dp.message(F.text.regexp(r"(Остальные\s+проекты)"))
 async def project_links(message: Message):
     buttons = [
         [InlineKeyboardButton(text="🔗 It Market", url="https://t.me/Itmarket1_bot")],
@@ -718,7 +719,7 @@ async def handle_assistant_message(message: Message, state: FSMContext):
 
 
 # === Генерация текста ===
-@dp.message(F.text == "✍️ Сгенерировать текст")
+@dp.message(F.text.in_(["✍️ Сгенерировать текст", "✍️ Цитаты дня"]))
 async def handle_text_generation(message: Message, state: FSMContext):
     await message.answer("🔄 Генерация текста началась. Пожалуйста, подождите...")
     await generate_text_logic(message)
@@ -728,10 +729,17 @@ async def generate_text_logic(message: Message):
         user_id = message.from_user.id
         ensure_user(user_id)
 
+        # ✅ Проверка на инициализацию клиента
+        if client is None:
+            await message.answer("❌ Ошибка: AI-клиент не настроен.")
+            return
+
+        # ✅ Проверка лимитов
         if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
+        # ✅ Запрос к GPT
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": "Напиши вдохновляющую цитату"}],
@@ -740,36 +748,50 @@ async def generate_text_logic(message: Message):
         text = response.choices[0].message.content.strip()
         await message.answer(f"📝 {text}")
 
+        # ✅ Сохранение в историю
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
-            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "text", "вдохновляющая цитата"))
+            cursor.execute(
+                "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+                (user_id, "text", "вдохновляющая цитата")
+            )
             conn.commit()
+
     except Exception as e:
+        logging.exception("Ошибка генерации текста:")  # ✅ логируем в webhook.log
         await message.answer(f"❌ Ошибка генерации текста: {e}")
 
+
 # === Генерация изображения ===
-@dp.message(F.text == "🔼 Создайте изображение")
+@dp.message(F.text.regexp(r"(создать|создайте)\s+изображение|🖼|🔼", flags=re.IGNORECASE))
 async def handle_image_prompt(message: Message, state: FSMContext):
     await state.set_state(GenStates.await_image)
-    await message.answer("🔼️ Напишите промпт для изображения")
+    await message.answer("🖼 Введите промпт для изображения:")
 
 @dp.message(GenStates.await_image)
-# === Обновление функции process_image_generation ===
 async def process_image_generation(message: Message, prompt: str = None):
     try:
         user_id = message.from_user.id
         prompt = prompt or message.text
 
+        # ✅ Проверка на инициализацию клиента
+        if client is None:
+            await message.answer("❌ Ошибка: AI-клиент не настроен.")
+            return
+
+        # ✅ Проверка лимита
         if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
+        # ✅ Проверка промпта
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) < 3:
             await message.answer("❌ Промпт должен быть не короче 3 символов.")
             return
 
         await message.answer("🤔 Генерирую изображение...")
 
+        # ✅ Генерация изображения
         dalle = await client.images.generate(prompt=prompt, model="dall-e-3", n=1, size="1024x1024")
         image_url = dalle.data[0].url
 
@@ -777,6 +799,7 @@ async def process_image_generation(message: Message, prompt: str = None):
             await message.answer("❌ Не удалось получить изображение.")
             return
 
+        # ✅ Загрузка изображения
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url) as resp:
                 if resp.status == 200:
@@ -785,12 +808,17 @@ async def process_image_generation(message: Message, prompt: str = None):
                 else:
                     await message.answer("❌ Не удалось загрузить изображение.")
 
+        # ✅ Сохраняем в историю
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
-            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
+            cursor.execute(
+                "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+                (user_id, "image", prompt)
+            )
             conn.commit()
 
     except Exception as e:
+        logging.exception("Ошибка генерации изображения:")  # ✅ лог в webhook.log
         await message.answer(f"❌ Ошибка: {e}")
 
         
