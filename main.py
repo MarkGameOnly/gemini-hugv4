@@ -55,28 +55,45 @@ conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 FREE_USES_LIMIT = 10
 
-def init_db():
+def init_db(): 
+    # Таблица пользователей
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             usage_count INTEGER DEFAULT 0,
             subscribed INTEGER DEFAULT 0,
             subscription_expires TEXT,
-            joined_at TEXT
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    cursor.execute("""CREATE TABLE IF NOT EXISTS history (...""")  # как у тебя есть
 
-    # 🛡 Гарантируем наличие админа
+    # Таблица истории генераций
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            type TEXT,
+            prompt TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 🛡 Добавляем колонку joined_at, если её нет (на случай старой базы)
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+    except sqlite3.OperationalError:
+        pass  # Колонка уже существует
+
+    # 🛡 Добавляем админа, если его нет
     cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (ADMIN_ID,))
     if not cursor.fetchone():
         cursor.execute(
             "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 1, NULL, ?)",
             (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"))
         )
+
     conn.commit()
 
-init_db()
 
 # === Middleware для автоматического ensure_user ===
 class EnsureUserMiddleware(BaseMiddleware):
@@ -85,12 +102,14 @@ class EnsureUserMiddleware(BaseMiddleware):
             user_id = event.from_user.id
             cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
             if not cursor.fetchone():
+                is_admin_user = int(user_id) == ADMIN_ID
                 cursor.execute(
-                    "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 0, NULL, ?)",
-                    (user_id, datetime.now().strftime("%Y-%m-%d"))
+                    "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, ?, NULL, ?)",
+                    (user_id, 1 if is_admin_user else 0, datetime.now().strftime("%Y-%m-%d"))
                 )
                 conn.commit()
         return await handler(event, data)
+
     
 # === Инициализация Telegram бота и OpenAI клиента ===
 session = AiohttpSession()
@@ -111,9 +130,10 @@ def ensure_user(user_id: int):
     """
     cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
     if not cursor.fetchone():
+        is_admin_user = int(user_id) == ADMIN_ID
         cursor.execute(
-            "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 0, NULL, ?)",
-            (user_id, datetime.now().strftime("%Y-%m-%d")),
+            "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, ?, NULL, ?)",
+            (user_id, 1 if is_admin_user else 0, datetime.now().strftime("%Y-%m-%d")),
         )
         conn.commit()
 
@@ -223,14 +243,21 @@ def save_json(path, data):
 def append_json(path, record):
     try:
         if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except json.JSONDecodeError:
+                print(f"⚠️ Повреждён JSON-файл: {path.name}. Перезаписываю.")
+                data = []
         else:
             data = []
+
         data.append(record)
         save_json(path, data)
+
     except Exception as e:
         print(f"❌ Ошибка при записи в {path.name}: {e}")
+
 
 def log_user_action(user_id, action, details):
     append_json(logs_path, {
@@ -321,8 +348,32 @@ async def root():
 # === Фоновая задача — напоминания о подписках ===
 async def check_subscription_reminders():
     while True:
-        print("🔔 Проверка напоминаний о подписках...")
-        await asyncio.sleep(3600)
+        try:
+            print("🔔 Проверка напоминаний о подписках...")
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+            cursor.execute("""
+                SELECT user_id FROM users
+                WHERE subscribed = 1 AND subscription_expires = ?
+            """, (tomorrow,))
+
+            users = cursor.fetchall()
+            for user_id_tuple in users:
+                user_id = user_id_tuple[0]
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "🔔 <b>Внимание!</b>\nВаша подписка истекает завтра. Продлите её, чтобы сохранить доступ.",
+                        parse_mode="HTML"
+                    )
+                    print(f"📨 Напоминание отправлено пользователю {user_id}")
+                except Exception as e:
+                    logging.warning(f"❌ Не удалось отправить сообщение {user_id}: {e}")
+
+        except Exception as e:
+            logging.error(f"❌ Ошибка при проверке подписок: {e}", exc_info=True)
+
+        await asyncio.sleep(3600)  # Проверка раз в час
 
 # === Состояния ===
 class GenStates(StatesGroup):
@@ -410,7 +461,11 @@ async def cmd_profile(message: Message):
     user_id = message.from_user.id
     ensure_user(user_id)
     cursor.execute("SELECT usage_count, subscribed, subscription_expires FROM users WHERE user_id = ?", (user_id,))
-    usage_count, subscribed, expires = cursor.fetchone()
+    row = cursor.fetchone()
+    if not row:
+        await message.answer("⚠️ Не удалось загрузить данные профиля.")
+        return
+    usage_count, subscribed, expires = row
 
     if str(user_id) == str(ADMIN_ID):
         sub_status = "🟢 Администратор — доступ всегда активен"
@@ -432,16 +487,34 @@ async def cmd_profile(message: Message):
     if not rows:
         await message.answer("📜 История пуста")
     else:
-        history_lines = [f"[{t}] {p[:40]}... ({c[:10]})" for t, p, c in rows]
-        await message.answer("🕒 Последние действия:\n" + "\n".join(history_lines))
+        history_lines = [
+            f"[{t}] {p.strip()[:40] + ('...' if len(p.strip()) > 40 else '')} ({c[:10]})"
+            for t, p, c in rows
+        ]
+        output = "🕒 Последние действия:\n" + "\n".join(history_lines)
+        if len(output) > 4000:
+            output = output[:3990] + "\n... (обрезано)"
+        await message.answer(output)
+
 
 # === Админка ===
+def log_admin_action(user_id: int, action: str):
+    with open("admin.log", "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now().isoformat()} — ADMIN [{user_id}]: {action}\n")
+
+def is_admin(user_id: int) -> bool:
+    return str(user_id) == str(ADMIN_ID)
+
 @dp.message(Command("admin"))
 async def admin_panel(message: Message):
     user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ Доступ запрещён")
+        return
+
+    log_admin_action(user_id, "Открыл админку /admin")
     logging.info(f"👤 Запрос на админку от: {user_id}")
 
-    # Показ статистики
     today = datetime.now().date()
     week_ago = today - timedelta(days=7)
     month_ago = today - timedelta(days=30)
@@ -467,60 +540,16 @@ async def admin_panel(message: Message):
 
     await message.answer(text, parse_mode="HTML", reply_markup=admin_inline_keyboard())
 
-# === Админские кнопки ===
+# === Инлайн кнопки ===
 def admin_inline_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 Логи", callback_data="view_logs")],
-        [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")]
+        [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")],
+        [InlineKeyboardButton(text="📄 Admin лог", callback_data="view_admin_log")]  # 👈 добавлена кнопка
     ])
 
-# === /logs команда ===
-@dp.message(Command("logs"))
-async def show_logs(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("❌ Доступ запрещён")
-        return
-    try:
-        with open("webhook.log", "r", encoding="utf-8") as f:
-            content = f.readlines()
-        last_lines = content[-50:] if len(content) > 50 else content
-        await message.answer("<code>{}</code>".format("".join(last_lines)), parse_mode="HTML")
-    except Exception as e:
-        logging.error("Ошибка /logs", exc_info=True)
-        await message.answer(f"❌ Ошибка чтения логов: {e}")
 
-# === /errors команда ===
-@dp.message(Command("errors"))
-async def show_errors(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("❌ Доступ запрещён")
-        return
-    try:
-        with open("errors.log", "r", encoding="utf-8") as f:
-            content = f.readlines()
-        last_lines = content[-50:] if len(content) > 50 else content
-        await message.answer("<code>{}</code>".format("".join(last_lines)), parse_mode="HTML")
-    except Exception as e:
-        logging.error("Ошибка /errors", exc_info=True)
-        await message.answer(f"❌ Ошибка чтения ошибок: {e}")
-
-# === Callback кнопок админки ===
-@dp.callback_query(F.data == "view_logs")
-async def cb_view_logs(callback: types.CallbackQuery):
-    await show_logs(callback.message)
-    await callback.answer()
-
-@dp.callback_query(F.data == "clear_logs")
-async def cb_clear_logs(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.message.answer("❌ Доступ запрещён")
-        return
-    open("webhook.log", "w", encoding="utf-8").close()
-    open("errors.log", "w", encoding="utf-8").close()
-    await callback.message.answer("🧹 Логи очищены")
-    await callback.answer()
-
-# === Утилита логов ===
+# === Показывает содержимое логов (до 50 строк) ===
 async def send_log_file(message: Message, filename: str):
     try:
         if not os.path.exists(filename):
@@ -536,13 +565,63 @@ async def send_log_file(message: Message, filename: str):
             await message.answer(f"<code>{last_lines}</code>", parse_mode="HTML")
         else:
             await message.answer(f"<code>{content}</code>", parse_mode="HTML")
+
     except Exception as e:
         logging.exception(f"Ошибка отправки {filename}")
         await message.answer(f"❌ Ошибка чтения логов: {e}")
 
+# === Команды для логов ===
+@dp.message(Command("logs"))
+async def show_logs(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Доступ запрещён")
+        return
+    log_admin_action(message.from_user.id, "Просмотрел /logs")
+    await send_log_file(message, "webhook.log")
+
+@dp.message(Command("errors"))
+async def show_errors(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Доступ запрещён")
+        return
+    log_admin_action(message.from_user.id, "Просмотрел /errors")
+    await send_log_file(message, "errors.log")
+
+# === Инлайн кнопки (callback) ===
+@dp.callback_query(F.data == "view_admin_log")
+async def cb_view_admin_log(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+    log_admin_action(callback.from_user.id, "Просмотрел 📄 admin.log")
+    await send_log_file(callback.message, "admin.log")
+    await callback.answer()
+
+@dp.callback_query(F.data == "view_logs")
+async def cb_view_logs(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+    log_admin_action(callback.from_user.id, "Нажал 📜 Просмотр логов")
+    await send_log_file(callback.message, "webhook.log")
+    await callback.answer()
+
+@dp.callback_query(F.data == "clear_logs")
+async def cb_clear_logs(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+    open("webhook.log", "w", encoding="utf-8").close()
+    open("errors.log", "w", encoding="utf-8").close()
+    log_admin_action(callback.from_user.id, "Нажал 🗑 Очистить логи")
+    await callback.message.answer("🧹 Логи очищены")
+    await callback.answer()
+
+# === Поддержка текстовых альтернатив ===
 @dp.message(F.text.in_(["⚙️ Админка", "админ", "Админ", "admin", "Admin"]))
 async def alias_admin_panel(message: Message):
     await admin_panel(message)
+
 
 # === Остальные проекты ===
 @dp.message(F.text == "📌 Остальные проекты")
