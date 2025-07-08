@@ -7,6 +7,7 @@ logging.basicConfig(level=logging.INFO)
 import sqlite3
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+ADMIN_ID = None
 from fastapi import FastAPI, Request, APIRouter
 from contextlib import asynccontextmanager
 
@@ -267,13 +268,16 @@ async def root():
     return {"status": "ok"}
     
 # === Инициализация ===
-load_dotenv()  # ← сначала
+load_dotenv()  # Сначала загружаем переменные
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))  # ← теперь загружается
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 
-init_db()  # ← теперь можно
+print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")  # ← и только теперь печатаем
+
+init_db()  # ← можно вызывать
 
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
