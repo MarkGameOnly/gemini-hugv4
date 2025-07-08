@@ -190,6 +190,9 @@ def save_image_prompt(user_id: int, prompt: str, image_url: str):
         "image_url": image_url,
         "timestamp": datetime.now().isoformat()
     })
+   # === Чтобы не было ограничений для админа=== 
+def is_admin(user_id: int) -> bool:
+    return int(user_id) == ADMIN_ID
 
 # === Работа с JSON ===
 import json
@@ -433,13 +436,10 @@ async def cmd_profile(message: Message):
 # === Админка ===
 @dp.message(Command("admin"))
 async def admin_panel(message: Message):
-    logging.info(f"👤 Запрос на админку от: {message.from_user.id}")
+    user_id = message.from_user.id
+    logging.info(f"👤 Запрос на админку от: {user_id}")
 
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Доступ запрещён")
-        return
-
-    # ✅ Проверка прошла
+    # Показ статистики
     today = datetime.now().date()
     week_ago = today - timedelta(days=7)
     month_ago = today - timedelta(days=30)
@@ -463,7 +463,7 @@ async def admin_panel(message: Message):
     text = f"📊 <b>Админка:</b>\n<b>Подписок активно:</b> {total_subs}\n\n"
     text += "\n".join([f"<b>{k}:</b> {v}" for k, v in stats.items()])
 
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML", reply_markup=admin_inline_keyboard())
 
 # === Админские кнопки ===
 def admin_inline_keyboard():
@@ -504,7 +504,7 @@ async def admin_panel(message: Message):
 # === /logs команда ===
 @dp.message(Command("logs"))
 async def show_logs(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id):
         await message.answer("❌ Доступ запрещён")
         return
     try:
@@ -519,7 +519,7 @@ async def show_logs(message: Message):
 # === /errors команда ===
 @dp.message(Command("errors"))
 async def show_errors(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id):
         await message.answer("❌ Доступ запрещён")
         return
     try:
