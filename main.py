@@ -65,15 +65,15 @@ def init_db():
             joined_at TEXT
         )
     """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            type TEXT,
-            prompt TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    cursor.execute("""CREATE TABLE IF NOT EXISTS history (...""")  # как у тебя есть
+
+    # 🛡 Гарантируем наличие админа
+    cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (ADMIN_ID,))
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 1, NULL, ?)",
+            (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"))
         )
-    """)
     conn.commit()
 
 init_db()
@@ -342,10 +342,12 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="✍️ Цитаты дня"), KeyboardButton(text="🖼 Создать изображение")],
             [KeyboardButton(text="🌌 Gemini AI"), KeyboardButton(text="🌠 Gemini Примеры")],
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💰 Купить подписку")],
-            [KeyboardButton(text="📚 Как пользоваться?"), KeyboardButton(text="📎 Остальные проекты")]
+            [KeyboardButton(text="📚 Как пользоваться?"), KeyboardButton(text="📎 Остальные проекты")],
+            [KeyboardButton(text="⚙️ Админка")]  # ← новая строка
         ],
         resize_keyboard=True
     )
+
 # === Таймаут для скачивания изображений ===
 aiohttp_timeout = aiohttp.ClientTimeout(total=60)
 
@@ -472,35 +474,6 @@ def admin_inline_keyboard():
         [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")]
     ])
 
-# === Команда /admin ===
-@dp.message(Command("admin"))
-async def admin_panel(message: Message):
-    user_id = message.from_user.id
-    if user_id != ADMIN_ID:
-        await message.answer("❌ Доступ запрещён")
-        return
-
-    today = datetime.now().date()
-    def count_since(date):
-        cursor.execute("SELECT COUNT(*) FROM users WHERE joined_at >= ?", (date.strftime("%Y-%m-%d"),))
-        return cursor.fetchone()[0]
-
-    stats = {
-        "Всего": count_since(datetime(1970, 1, 1)),
-        "Сегодня": count_since(today),
-        "Неделя": count_since(today - timedelta(days=7)),
-        "Месяц": count_since(today - timedelta(days=30)),
-        "Год": count_since(today - timedelta(days=365))
-    }
-
-    cursor.execute("SELECT COUNT(*) FROM users WHERE subscribed = 1")
-    total_subs = cursor.fetchone()[0]
-
-    text = f"📊 <b>Админка:</b>\n<b>Подписок активно:</b> {total_subs}\n\n"
-    text += "\n".join([f"<b>{k}:</b> {v}" for k, v in stats.items()])
-
-    await message.answer(text, reply_markup=admin_inline_keyboard(), parse_mode="HTML")
-
 # === /logs команда ===
 @dp.message(Command("logs"))
 async def show_logs(message: Message):
@@ -539,7 +512,7 @@ async def cb_view_logs(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "clear_logs")
 async def cb_clear_logs(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
     open("webhook.log", "w", encoding="utf-8").close()
@@ -566,6 +539,10 @@ async def send_log_file(message: Message, filename: str):
     except Exception as e:
         logging.exception(f"Ошибка отправки {filename}")
         await message.answer(f"❌ Ошибка чтения логов: {e}")
+
+@dp.message(F.text.in_(["⚙️ Админка", "админ", "Админ", "admin", "Admin"]))
+async def alias_admin_panel(message: Message):
+    await admin_panel(message)
 
 # === Остальные проекты ===
 @dp.message(F.text == "📌 Остальные проекты")
