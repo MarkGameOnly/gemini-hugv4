@@ -267,12 +267,13 @@ async def root():
     return {"status": "ok"}
     
 # === Инициализация ===
-init_db()
-load_dotenv()
+load_dotenv()  # ← сначала
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
 DOMAIN_URL = os.getenv("DOMAIN_URL")
+
+init_db()  # ← теперь можно
 
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
