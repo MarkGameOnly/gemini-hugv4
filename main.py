@@ -312,7 +312,6 @@ for log_file in ["webhook.log", "errors.log"]:
 
 reminder_task_started = False  # глобальный флаг вне lifespan
 
-@app.on_event("startup")
 async def on_start():
     print("✅ Бот запущен и готов к работе.")
 
