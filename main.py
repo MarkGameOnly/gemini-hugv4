@@ -1058,39 +1058,37 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
         "prompt_example": "Придумай интересный промпт для изображения суперкара"
     }
 
-data_id = example_id or callback.data
-prompt = prompt_map.get(data_id)
+    data_id = example_id or callback.data
+    prompt = prompt_map.get(data_id)
 
-if not prompt:
-    await callback.answer("❌ Пример не найден", show_alert=True)
-    return
+    if not prompt:
+        await callback.answer("❌ Пример не найден", show_alert=True)
+        return
 
-# Проверка клиента ДО генерации
-if client is None:
-    await callback.message.answer("❌ AI-клиент не инициализирован.")
+    if client is None:
+        await callback.message.answer("❌ AI-клиент не инициализирован.")
+        await callback.answer()
+        return
+
+    if not is_admin:
+        increment_usage(user_id)
+        cursor.execute(
+            "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+            (user_id, "example", prompt)
+        )
+        conn.commit()
+        log_admin_action(user_id, f"Выбрал пример: {data_id} – {prompt}")
+
+    await callback.message.answer("💭 Думаю...")
+
+    try:
+        response_text = await gemini_generate_response(prompt)
+        await callback.message.answer(response_text)
+    except Exception as e:
+        logging.exception(f"Ошибка при генерации Gemini-ответа для prompt: {prompt}")
+        await callback.message.answer(f"❌ Ошибка при генерации ответа: {e}")
+
     await callback.answer()
-    return
-
-# Учёт использования
-if not is_admin:
-    increment_usage(user_id)
-    cursor.execute(
-        "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
-        (user_id, "example", prompt)
-    )
-    conn.commit()
-    log_admin_action(user_id, f"Выбрал пример: {data_id} – {prompt}")
-
-await callback.message.answer("💭 Думаю...")
-
-try:
-    response_text = await gemini_generate_response(prompt)
-    await callback.message.answer(response_text)
-except Exception as e:
-    logging.exception(f"Ошибка при генерации Gemini-ответа для prompt: {prompt}")
-    await callback.message.answer(f"❌ Ошибка при генерации ответа: {e}")
-
-await callback.answer()
 
 
 async def gemini_generate_response(prompt: str) -> str:
