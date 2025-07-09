@@ -556,27 +556,32 @@ def admin_inline_keyboard():
         [InlineKeyboardButton(text="📬 Отправить пост", callback_data="start_broadcast")]
     ])
 
-# === Логи ===
+# === Универсальная функция отправки логов ===
 async def send_log_file(message: Message, filename: str):
     try:
         if not os.path.exists(filename):
-            await message.answer("📜 Лог-файл отсутстует.")
+            await message.answer(f"📜 Файл <b>{filename}</b> отсутствует.", parse_mode="HTML")
             return
 
         with open(filename, "r", encoding="utf-8") as f:
             content = f.read()
 
+        if not content.strip():
+            await message.answer(f"📭 Файл <b>{filename}</b> пуст.", parse_mode="HTML")
+            return
+
         if len(content) > 4000:
             lines = content.strip().split("\n")
             last_lines = "\n".join(lines[-50:])
-            await message.answer(f"<code>{last_lines}</code>", parse_mode="HTML")
+            await message.answer(f"<b>Последние 50 строк из {filename}:</b>\n\n<code>{last_lines}</code>", parse_mode="HTML")
         else:
-            await message.answer(f"<code>{content}</code>", parse_mode="HTML")
+            await message.answer(f"<b>Лог {filename}:</b>\n\n<code>{content}</code>", parse_mode="HTML")
 
     except Exception as e:
-        logging.exception(f"Ошибка отправки {filename}")
-        await message.answer(f"❌ Ошибка: {e}")
+        logging.exception(f"Ошибка при отправке {filename}")
+        await message.answer(f"❌ Ошибка при чтении {filename}: {e}")
 
+# === Команды логов ===
 @dp.message(Command("logs"))
 async def show_logs(message: Message):
     if not is_admin(message.from_user.id):
@@ -593,6 +598,7 @@ async def show_errors(message: Message):
     log_admin_action(message.from_user.id, "Просмотрел /errors")
     await send_log_file(message, "errors.log")
 
+# === Кнопки логов ===
 @dp.callback_query(F.data == "view_admin_log")
 async def cb_view_admin_log(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -607,7 +613,7 @@ async def cb_view_logs(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
-    log_admin_action(callback.from_user.id, "Просмотр логов")
+    log_admin_action(callback.from_user.id, "Просмотрел webhook.log")
     await send_log_file(callback.message, "webhook.log")
     await callback.answer()
 
@@ -616,11 +622,18 @@ async def cb_clear_logs(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
-    open("webhook.log", "w", encoding="utf-8").close()
-    open("errors.log", "w", encoding="utf-8").close()
-    log_admin_action(callback.from_user.id, "Очистка логов")
-    await callback.message.answer("🧹 Логи очищены")
+    for log_file in ["webhook.log", "errors.log", "admin.log"]:
+    try:
+        if os.path.exists(log_file):
+            open(log_file, "w", encoding="utf-8").close()
+    except Exception as e:
+        logging.warning(f"Не удалось очистить {log_file}: {e}")
+        except Exception as e:
+            logging.warning(f"Не удалось очистить {log_file}: {e}")
+    log_admin_action(callback.from_user.id, "Очистил все логи")
+    await callback.message.answer("🧹 Логи очищены.")
     await callback.answer()
+
 
 @dp.callback_query(F.data == "start_broadcast")
 async def initiate_broadcast(callback: types.CallbackQuery, state: FSMContext):
@@ -638,26 +651,34 @@ async def process_broadcast_content(message: Message, state: FSMContext):
     users = [row[0] for row in cursor.fetchall()]
 
     success, failed = 0, 0
+
     for user_id in users:
         try:
             if message.photo:
                 photo = message.photo[-1].file_id
                 await bot.send_photo(user_id, photo, caption=message.caption or "")
-            elif message.text:
-                await bot.send_message(user_id, message.text)
             elif message.document:
                 file = message.document.file_id
                 await bot.send_document(user_id, file)
+            elif message.text:
+                await bot.send_message(user_id, message.text)
             else:
-                continue
-            await asyncio.sleep(0.1)
+                continue  # игнорировать неподдерживаемые типы
+            await asyncio.sleep(0.1)  # задержка чтобы не спамить
             success += 1
         except Exception as e:
-            logging.warning(f"Ошибка для {user_id}: {e}")
+            # Записываем ошибку в broadcast.log
+            with open("broadcast.log", "a", encoding="utf-8") as logf:
+                logf.write(f"[Broadcast Error] User {user_id}: {e}\n")
             failed += 1
 
-    log_admin_action(message.from_user.id, f"Выполнил рассылку. Успешно: {success}, Ошибок: {failed}")
-    await message.answer(f"✅ Рассылка завершена.\n\n📬 Успешно: {success}\n❌ Ошибок: {failed}")
+    log_admin_action(
+        message.from_user.id,
+        f"Выполнил рассылку. Успешно: {success}, Ошибок: {failed}"
+    )
+    await message.answer(
+        f"✅ Рассылка завершена.\n\n📬 Успешно: {success}\n❌ Ошибок: {failed}"
+    )
 
 @dp.message(Command("cancel"), AdminStates.awaiting_broadcast_content)
 async def cancel_broadcast(message: Message, state: FSMContext):
@@ -668,6 +689,9 @@ async def cancel_broadcast(message: Message, state: FSMContext):
 async def alias_admin_panel(message: Message):
     await admin_panel(message)
 
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    await admin_panel(message)
 
 # === Остальные проекты ===
 @dp.message(F.text.in_(["📎 Остальные проекты"]))
@@ -998,6 +1022,16 @@ async def gemini_examples(message: Message, state: FSMContext):
     await message.answer("🌠 Выберите пример или создайте свой промпт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=examples))
     await state.set_state(StateAssistant.dialog)
 
+# === Обработчик остановки до общего dispatch ===
+@dp.callback_query(F.data == "stop_assistant")
+async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() == StateAssistant.dialog:
+        await state.clear()
+        await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
+    else:
+        await callback.message.answer("ℹ️ Режим уже завершён.", reply_markup=main_menu())
+    await callback.answer()
+
 
 @dp.callback_query(F.data == "random_example")
 async def gemini_random_example(callback: types.CallbackQuery, state: FSMContext):
@@ -1020,7 +1054,7 @@ async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(StateAssistant.dialog)
     await callback.answer()
 
-
+# === Основной обработчик генерации ===
 @dp.callback_query()
 async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id: str = None):
     user_id = callback.from_user.id
