@@ -784,9 +784,9 @@ async def cancel_generation(message: Message, state: FSMContext):
 
 # === Генерация изображения ===
 
-@dp.message(F.text.in_("🎨Создать изображение"))
+@dp.message(F.text.in_(["🎨Создать изображение"]))
 async def handle_image_prompt(message: Message, state: FSMContext):
-    await state.clear()  # сбросим, если был активен Gemini
+    await state.clear()
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
@@ -795,37 +795,28 @@ async def handle_image_prompt(message: Message, state: FSMContext):
     sent_msg = await message.answer("🖼 Введите промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
     asyncio.create_task(update_timer(state, sent_msg, message, control_buttons))
 
+
 @dp.message(Command("cancel"))
 async def cancel_image_generation(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state == GenStates.await_image:
+    if await state.get_state() == GenStates.await_image:
         await state.clear()
-        await message.answer("❌ Генерация изображения отменена.", reply_markup=main_menu())
+        await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
+
 
 @dp.callback_query(F.data == "stop_generation")
 async def stop_image_generation(callback: types.CallbackQuery, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state == GenStates.await_image:
+    if await state.get_state() == GenStates.await_image:
         await state.clear()
-        await callback.message.answer("⏹ Генерация изображения остановлена.", reply_markup=main_menu())
+        await callback.message.answer("⏹ Генерация остановлена.", reply_markup=main_menu())
     else:
         await callback.message.answer("ℹ️ Генерация уже завершена или неактивна.", reply_markup=main_menu())
     await callback.answer()
 
-@dp.callback_query(F.data == "stop_assistant")
-async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
-    if await state.get_state() == StateAssistant.dialog:
-        await state.clear()
-        await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
-    else:
-        await callback.message.answer("ℹ️ Режим уже завершён.", reply_markup=main_menu())
-    await callback.answer()
 
 async def update_timer(state: FSMContext, sent_msg: types.Message, message: types.Message, control_buttons):
     for seconds_left in [45, 30, 15]:
         await asyncio.sleep(15)
-        current_state = await state.get_state()
-        if current_state != GenStates.await_image:
+        if await state.get_state() != GenStates.await_image:
             return
         user_data = await state.get_data()
         if user_data.get("prompt_received"):
@@ -837,21 +828,19 @@ async def update_timer(state: FSMContext, sent_msg: types.Message, message: type
             return
 
     await asyncio.sleep(15)
-    current_state = await state.get_state()
-    if current_state == GenStates.await_image:
+    if await state.get_state() == GenStates.await_image:
         await state.clear()
         try:
             await sent_msg.edit_text("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
         except Exception:
             await message.answer("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
 
-IGNORED_BUTTONS = {"🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Создать изображение", "✍️ Цитаты дня"}
 
 @dp.message(F.state == GenStates.await_image)
 async def process_image_generation(message: Message, state: FSMContext):
-    text = message.text.strip() if isinstance(message.text, str) else ""
-    if not text or text in IGNORED_BUTTONS:
-        return  # игнорируем кнопки и пустые сообщения
+    text = message.text.strip()
+    if not text or text in {"🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Создать изображение", "✍️ Цитаты дня"}:
+        return
 
     try:
         user_id = message.from_user.id
@@ -871,15 +860,14 @@ async def process_image_generation(message: Message, state: FSMContext):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
-        await message.answer("🤔 Генерирую изображение...")
+        await message.answer("🎨 Генерирую изображение...")
 
         dalle = await client.images.generate(prompt=prompt, model="dall-e-3", n=1, size="1024x1024")
+        image_url = dalle.data[0].url if dalle and dalle.data else None
 
-        if not dalle or not dalle.data or not dalle.data[0].url:
+        if not image_url:
             await message.answer("❌ Не удалось получить изображение.")
             return
-
-        image_url = dalle.data[0].url
 
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url) as resp:
@@ -910,11 +898,13 @@ async def process_image_generation(message: Message, state: FSMContext):
         logging.exception("Ошибка генерации изображения:")
         await message.answer(f"❌ Ошибка: {e}")
 
+
 @dp.callback_query(F.data == "generate_another")
 async def generate_another(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(GenStates.await_image)
     await callback.message.answer("🖼 Введите новый промпт для изображения (или /cancel для отмены):")
     await callback.answer()
+
 
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMContext):
