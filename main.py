@@ -450,7 +450,7 @@ async def how_to_use(message: Message):
         "1️⃣ Выберите режим генерации: текст, изображение или видео.\n"
         "2️⃣ Введите запрос, например: <i>«Нарисуй дракона в пустыне»</i> 🐉\n"
         "3️⃣ Получите результат и сохраните его 📥\n\n"
-        "💡 Для умного помощника используйте 🧠.\n"
+        "💡 Для умного помощника используйте 🌌Gemini AI.\n"
         "ℹ️ Подписка дает больше запросов и скорость ответа."
     )
     await message.answer(text, parse_mode="HTML")
@@ -499,6 +499,11 @@ async def cmd_profile(message: Message):
 
 
 # === Админка ===
+
+# Состояние для FSM
+class AdminStates(StatesGroup):
+    awaiting_broadcast_content = State()
+
 def log_admin_action(user_id: int, action: str):
     with open("admin.log", "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().isoformat()} — ADMIN [{user_id}]: {action}\n")
@@ -514,7 +519,7 @@ async def admin_panel(message: Message):
         return
 
     log_admin_action(user_id, "Открыл админку /admin")
-    logging.info(f"👤 Запрос на админку от: {user_id}")
+    logging.info(f"🕤 Запрос на админку от: {user_id}")
 
     today = datetime.now().date()
     week_ago = today - timedelta(days=7)
@@ -546,15 +551,16 @@ def admin_inline_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 Логи", callback_data="view_logs")],
         [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")],
-        [InlineKeyboardButton(text="📄 Admin лог", callback_data="view_admin_log")]  # 👈 добавлена кнопка
+        [InlineKeyboardButton(text="📄 Admin лог", callback_data="view_admin_log")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="start_broadcast")],
+        [InlineKeyboardButton(text="📬 Отправить пост", callback_data="start_broadcast")]
     ])
 
-
-# === Показывает содержимое логов (до 50 строк) ===
+# === Логи ===
 async def send_log_file(message: Message, filename: str):
     try:
         if not os.path.exists(filename):
-            await message.answer("📭 Лог-файл отсутствует.")
+            await message.answer("📜 Лог-файл отсутстует.")
             return
 
         with open(filename, "r", encoding="utf-8") as f:
@@ -569,9 +575,8 @@ async def send_log_file(message: Message, filename: str):
 
     except Exception as e:
         logging.exception(f"Ошибка отправки {filename}")
-        await message.answer(f"❌ Ошибка чтения логов: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
-# === Команды для логов ===
 @dp.message(Command("logs"))
 async def show_logs(message: Message):
     if not is_admin(message.from_user.id):
@@ -588,13 +593,12 @@ async def show_errors(message: Message):
     log_admin_action(message.from_user.id, "Просмотрел /errors")
     await send_log_file(message, "errors.log")
 
-# === Инлайн кнопки (callback) ===
 @dp.callback_query(F.data == "view_admin_log")
 async def cb_view_admin_log(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
-    log_admin_action(callback.from_user.id, "Просмотрел 📄 admin.log")
+    log_admin_action(callback.from_user.id, "Просмотрел admin.log")
     await send_log_file(callback.message, "admin.log")
     await callback.answer()
 
@@ -603,7 +607,7 @@ async def cb_view_logs(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
-    log_admin_action(callback.from_user.id, "Нажал 📜 Просмотр логов")
+    log_admin_action(callback.from_user.id, "Просмотр логов")
     await send_log_file(callback.message, "webhook.log")
     await callback.answer()
 
@@ -614,11 +618,52 @@ async def cb_clear_logs(callback: types.CallbackQuery):
         return
     open("webhook.log", "w", encoding="utf-8").close()
     open("errors.log", "w", encoding="utf-8").close()
-    log_admin_action(callback.from_user.id, "Нажал 🗑 Очистить логи")
+    log_admin_action(callback.from_user.id, "Очистка логов")
     await callback.message.answer("🧹 Логи очищены")
     await callback.answer()
 
-# === Поддержка текстовых альтернатив ===
+@dp.callback_query(F.data == "start_broadcast")
+async def initiate_broadcast(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+    await state.set_state(AdminStates.awaiting_broadcast_content)
+    await callback.message.answer("📢 Введите сообщение или прикрепите файл/изображение для рассылки:")
+    await callback.answer()
+
+@dp.message(AdminStates.awaiting_broadcast_content)
+async def process_broadcast_content(message: Message, state: FSMContext):
+    await state.clear()
+    cursor.execute("SELECT user_id FROM users")
+    users = [row[0] for row in cursor.fetchall()]
+
+    success, failed = 0, 0
+    for user_id in users:
+        try:
+            if message.photo:
+                photo = message.photo[-1].file_id
+                await bot.send_photo(user_id, photo, caption=message.caption or "")
+            elif message.text:
+                await bot.send_message(user_id, message.text)
+            elif message.document:
+                file = message.document.file_id
+                await bot.send_document(user_id, file)
+            else:
+                continue
+            await asyncio.sleep(0.1)
+            success += 1
+        except Exception as e:
+            logging.warning(f"Ошибка для {user_id}: {e}")
+            failed += 1
+
+    log_admin_action(message.from_user.id, f"Выполнил рассылку. Успешно: {success}, Ошибок: {failed}")
+    await message.answer(f"✅ Рассылка завершена.\n\n📬 Успешно: {success}\n❌ Ошибок: {failed}")
+
+@dp.message(Command("cancel"), AdminStates.awaiting_broadcast_content)
+async def cancel_broadcast(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Рассылка отменена.")
+
 @dp.message(F.text.in_(["⚙️ Админка", "админ", "Админ", "admin", "Admin"]))
 async def alias_admin_panel(message: Message):
     await admin_panel(message)
@@ -776,6 +821,30 @@ async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("ℹ️ Режим уже завершён.", reply_markup=main_menu())
     await callback.answer()
 
+async def update_timer(state: FSMContext, sent_msg: types.Message, message: types.Message, control_buttons):
+    for seconds_left in [45, 30, 15]:
+        await asyncio.sleep(15)
+        current_state = await state.get_state()
+        if current_state != GenStates.await_image:
+            return
+        user_data = await state.get_data()
+        if user_data.get("prompt_received"):
+            return
+        try:
+            await sent_msg.edit_text(f"🖼 Введите промпт для изображения:\n\n⏳ Осталось {seconds_left} секунд", reply_markup=control_buttons)
+        except Exception as e:
+            logging.warning(f"Ошибка при обновлении таймера: {e}")
+            return
+
+    await asyncio.sleep(15)
+    current_state = await state.get_state()
+    if current_state == GenStates.await_image:
+        await state.clear()
+        try:
+            await sent_msg.edit_text("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+        except Exception:
+            await message.answer("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+
 IGNORED_BUTTONS = {"🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Создать изображение", "✍️ Цитаты дня"}
 
 @dp.message(F.state == GenStates.await_image)
@@ -785,6 +854,8 @@ async def process_image_generation(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
         prompt = message.text.strip()
+
+        await state.update_data(prompt_received=True)
 
         if client is None:
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
@@ -847,29 +918,6 @@ async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMConte
     await state.clear()
     await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
-
-async def update_timer(state: FSMContext, sent_msg: types.Message, message: types.Message, control_buttons):
-    for seconds_left in [45, 30, 15]:
-        await asyncio.sleep(15)
-        if await state.get_state() != GenStates.await_image:
-            return
-        try:
-            await sent_msg.edit_text(
-                f"🖼 Введите промпт для изображения:\n\n⏳ Осталось {seconds_left} секунд",
-                reply_markup=control_buttons
-            )
-        except Exception as e:
-            logging.warning(f"Ошибка при обновлении таймера: {e}")
-            return
-
-    await asyncio.sleep(15)
-    if await state.get_state() == GenStates.await_image:
-        await state.clear()
-        try:
-            await sent_msg.edit_text("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
-        except Exception:
-            await message.answer("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
-
 
 # === 🌌 Gemini AI — Умный диалог ===
 
