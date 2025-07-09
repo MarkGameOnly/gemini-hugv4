@@ -312,6 +312,10 @@ for log_file in ["webhook.log", "errors.log"]:
 
 reminder_task_started = False  # глобальный флаг вне lifespan
 
+@app.on_event("startup")
+async def on_start():
+    print("✅ Бот запущен и готов к работе.")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global reminder_task_started
@@ -426,11 +430,13 @@ def gemini_keyboard() -> InlineKeyboardMarkup:
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
+    await state.clear()
     await callback.message.answer("🔙 Возвращаюсь в главное меню.", reply_markup=main_menu())
     await callback.answer()
 
 @dp.message(Command("stop"))
 async def stop_command(message: Message, state: FSMContext):
+    await state.clear()
     await state.clear()
     await message.answer("🛑 Режим остановлен. Вы в главном меню:", reply_markup=main_menu())
     
@@ -622,14 +628,14 @@ async def cb_clear_logs(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
+
     for log_file in ["webhook.log", "errors.log", "admin.log"]:
-    try:
-        if os.path.exists(log_file):
-            open(log_file, "w", encoding="utf-8").close()
-    except Exception as e:
-        logging.warning(f"Не удалось очистить {log_file}: {e}")
+        try:
+            if os.path.exists(log_file):
+                open(log_file, "w", encoding="utf-8").close()
         except Exception as e:
             logging.warning(f"Не удалось очистить {log_file}: {e}")
+
     log_admin_action(callback.from_user.id, "Очистил все логи")
     await callback.message.answer("🧹 Логи очищены.")
     await callback.answer()
@@ -637,6 +643,7 @@ async def cb_clear_logs(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "start_broadcast")
 async def initiate_broadcast(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
@@ -646,6 +653,7 @@ async def initiate_broadcast(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(AdminStates.awaiting_broadcast_content)
 async def process_broadcast_content(message: Message, state: FSMContext):
+    await state.clear()
     await state.clear()
     cursor.execute("SELECT user_id FROM users")
     users = [row[0] for row in cursor.fetchall()]
@@ -682,6 +690,7 @@ async def process_broadcast_content(message: Message, state: FSMContext):
 
 @dp.message(Command("cancel"), AdminStates.awaiting_broadcast_content)
 async def cancel_broadcast(message: Message, state: FSMContext):
+    await state.clear()
     await state.clear()
     await message.answer("❌ Рассылка отменена.")
 
@@ -733,6 +742,7 @@ async def buy_subscription(message: Message):
 @dp.message(F.text.in_(["✍️ Цитаты дня"]))
 async def handle_text_generation(message: Message, state: FSMContext):
     await state.clear()
+    await state.clear()
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
@@ -745,6 +755,7 @@ async def handle_text_generation(message: Message, state: FSMContext):
 # === Логика генерации ===
 
 async def generate_text_logic(message: Message, state: FSMContext):
+    await state.clear()
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
@@ -784,6 +795,7 @@ async def generate_text_logic(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "stop_generation")
 async def stop_generation(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     current_state = await state.get_state()
     if current_state == "generating_text":
         await state.clear()
@@ -792,14 +804,15 @@ async def stop_generation(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("ℹ️ Генерация уже завершена или неактивна.", reply_markup=main_menu())
     await callback.answer()
 
-@dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await state.clear()
     await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
 
 @dp.message(Command("cancel"))
 async def cancel_generation(message: Message, state: FSMContext):
+    await state.clear()
     current_state = await state.get_state()
     if current_state == "generating_text":
         await state.clear()
@@ -810,6 +823,7 @@ async def cancel_generation(message: Message, state: FSMContext):
 
 @dp.message(F.text.in_(["🎨Создать изображение"]))
 async def handle_image_prompt(message: Message, state: FSMContext):
+    await state.clear()
     await state.clear()
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
@@ -822,6 +836,7 @@ async def handle_image_prompt(message: Message, state: FSMContext):
 
 @dp.message(Command("cancel"))
 async def cancel_image_generation(message: Message, state: FSMContext):
+    await state.clear()
     if await state.get_state() == GenStates.await_image:
         await state.clear()
         await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
@@ -829,6 +844,7 @@ async def cancel_image_generation(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "stop_generation")
 async def stop_image_generation(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     if await state.get_state() == GenStates.await_image:
         await state.clear()
         await callback.message.answer("⏹ Генерация остановлена.", reply_markup=main_menu())
@@ -838,6 +854,7 @@ async def stop_image_generation(callback: types.CallbackQuery, state: FSMContext
 
 
 async def update_timer(state: FSMContext, sent_msg: types.Message, message: types.Message, control_buttons):
+    await state.clear()
     for seconds_left in [45, 30, 15]:
         await asyncio.sleep(15)
         if await state.get_state() != GenStates.await_image:
@@ -862,6 +879,7 @@ async def update_timer(state: FSMContext, sent_msg: types.Message, message: type
 
 @dp.message(F.state == GenStates.await_image)
 async def process_image_generation(message: Message, state: FSMContext):
+    await state.clear()
     text = message.text.strip()
     if not text or text in {"🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Создать изображение", "✍️ Цитаты дня"}:
         return
@@ -925,13 +943,14 @@ async def process_image_generation(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "generate_another")
 async def generate_another(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await state.set_state(GenStates.await_image)
     await callback.message.answer("🖼 Введите новый промпт для изображения (или /cancel для отмены):")
     await callback.answer()
 
 
-@dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await state.clear()
     await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
@@ -941,6 +960,7 @@ async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMConte
 
 @dp.message(F.text.in_(["🌌 Gemini AI"]))
 async def start_gemini_dialog(message: Message, state: FSMContext):
+    await state.clear()
     await state.clear()
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_assistant")],
@@ -952,6 +972,7 @@ async def start_gemini_dialog(message: Message, state: FSMContext):
 
 @dp.message(StateAssistant.dialog)
 async def handle_gemini_dialog(message: Message, state: FSMContext):
+    await state.clear()
     if message.text in ["🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Создать изображение", "✍️ Цитаты дня"]:
         return  # игнорируем нажатия кнопок
 
@@ -1001,6 +1022,7 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
 @dp.message(F.text == "🌠 Gemini Примеры")
 async def gemini_examples(message: Message, state: FSMContext):
     await state.clear()
+    await state.clear()
     examples = [
         [InlineKeyboardButton(text="Промпт для генерации", callback_data="prompt_example"),
          InlineKeyboardButton(text="Пейзаж", callback_data="img_landscape")],
@@ -1025,6 +1047,7 @@ async def gemini_examples(message: Message, state: FSMContext):
 # === Обработчик остановки до общего dispatch ===
 @dp.callback_query(F.data == "stop_assistant")
 async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     if await state.get_state() == StateAssistant.dialog:
         await state.clear()
         await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
@@ -1035,6 +1058,7 @@ async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "random_example")
 async def gemini_random_example(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     examples = [
         "img_landscape", "img_anime_girl", "img_fantasy_city", "img_modern_office",
         "img_food_dessert", "img_luxury_car", "img_loft_interior",
@@ -1045,6 +1069,7 @@ async def gemini_random_example(callback: types.CallbackQuery, state: FSMContext
 
 @dp.callback_query(F.data == "new_query")
 async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     user_id = callback.from_user.id
     if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
         await callback.message.answer("💸 Любой запрос — за ваши деньги! Купите подписку 🪙")
@@ -1057,6 +1082,7 @@ async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
 # === Основной обработчик генерации ===
 @dp.callback_query()
 async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id: str = None):
+    await state.clear()
     user_id = callback.from_user.id
     is_admin = str(user_id) == str(ADMIN_ID)
 
