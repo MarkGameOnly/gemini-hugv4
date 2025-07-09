@@ -391,7 +391,7 @@ class StateAssistant(StatesGroup):
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✍️ Цитаты дня"), KeyboardButton(text="🖼 Создать изображение")],
+            [KeyboardButton(text="✍️ Цитаты дня"), KeyboardButton(text="🎨Создать изображение")],
             [KeyboardButton(text="🌌 Gemini AI"), KeyboardButton(text="🌠 Gemini Примеры")],
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💰 Купить подписку")],
             [KeyboardButton(text="📚 Как пользоваться?"), KeyboardButton(text="📎 Остальные проекты")],
@@ -750,7 +750,7 @@ async def cancel_command(message: Message, state: FSMContext):
 
 # === Генерация изображения ===
 
-@dp.message(F.text.in_(["🎨 Создать изображение"]))
+@dp.message(F.text.in_(["🎨Создать изображение"]))
 async def handle_image_prompt(message: Message, state: FSMContext):
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
