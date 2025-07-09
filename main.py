@@ -849,11 +849,17 @@ IGNORED_BUTTONS = {"🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Созд
 
 @dp.message(F.state == GenStates.await_image)
 async def process_image_generation(message: Message, state: FSMContext):
-    if not isinstance(message.text, str) or message.text.strip() in IGNORED_BUTTONS:
-        return  # игнорируем кнопки в режиме ожидания промпта
+    text = message.text.strip() if isinstance(message.text, str) else ""
+    if not text or text in IGNORED_BUTTONS:
+        return  # игнорируем кнопки и пустые сообщения
+
     try:
         user_id = message.from_user.id
-        prompt = message.text.strip()
+        prompt = text
+
+        if len(prompt) < 3:
+            await message.answer("❌ Промпт должен быть не короче 3 символов.")
+            return
 
         await state.update_data(prompt_received=True)
 
@@ -865,15 +871,11 @@ async def process_image_generation(message: Message, state: FSMContext):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
-        if len(prompt) < 3:
-            await message.answer("❌ Промпт должен быть не короче 3 символов.")
-            return
-
         await message.answer("🤔 Генерирую изображение...")
 
         dalle = await client.images.generate(prompt=prompt, model="dall-e-3", n=1, size="1024x1024")
 
-        if not dalle.data or not dalle.data[0].url:
+        if not dalle or not dalle.data or not dalle.data[0].url:
             await message.answer("❌ Не удалось получить изображение.")
             return
 
@@ -892,6 +894,7 @@ async def process_image_generation(message: Message, state: FSMContext):
                     )
                 else:
                     await message.answer("❌ Не удалось загрузить изображение.")
+                    return
 
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
@@ -918,6 +921,7 @@ async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMConte
     await state.clear()
     await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
+
 
 # === 🌌 Gemini AI — Умный диалог ===
 
@@ -1040,6 +1044,11 @@ async def gemini_random_example(callback: types.CallbackQuery, state: FSMContext
 
 @dp.callback_query(F.data == "new_query")
 async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
+        await callback.message.answer("💸 Любой запрос — за ваши деньги! Купите подписку 🪙")
+        await callback.answer()
+        return
     await callback.message.answer("✏️ Введите свой вопрос или тему:")
     await state.set_state(StateAssistant.dialog)
     await callback.answer()
@@ -1048,9 +1057,11 @@ async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query()
 async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id: str = None):
     user_id = callback.from_user.id
+    is_admin = str(user_id) == str(ADMIN_ID)
+
     ensure_user(user_id)
 
-    if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+    if not is_admin and is_limited(user_id):
         await callback.message.answer("🔒 Лимит исчерпан. Купите подписку 💰", reply_markup=main_menu())
         await callback.answer()
         return
@@ -1077,6 +1088,16 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
         await callback.answer("❌ Пример не найден", show_alert=True)
         return
 
+    # учёт использования и лог
+    if not is_admin:
+        increment_usage(user_id)
+        cursor.execute(
+            "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+            (user_id, "example", prompt)
+        )
+        conn.commit()
+        log_admin_action(user_id, f"Выбрал пример: {data_id} – {prompt}")
+
     fake_msg = types.Message(
         message_id=callback.message.message_id,
         date=callback.message.date,
@@ -1085,5 +1106,6 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
         message_thread_id=callback.message.message_thread_id,
         text=prompt
     )
+    await state.set_state(StateAssistant.dialog)
     await handle_gemini_dialog(fake_msg, state)
     await callback.answer()
