@@ -955,7 +955,7 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
             return
 
-        if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+        if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
             await message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
             return
 
@@ -981,29 +981,6 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         logging.exception("Ошибка в Gemini:")
         await message.answer(f"❌ Ошибка: {e}")
 
-
-@dp.callback_query(F.data == "stop_assistant")
-async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
-    if await state.get_state() == StateAssistant.dialog:
-        await state.clear()
-        await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
-    else:
-        await callback.message.answer("ℹ️ Режим уже завершён.", reply_markup=main_menu())
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "back_to_menu")
-async def back_to_menu_from_gemini(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
-    await callback.answer()
-
-
-@dp.message(Command("cancel"))
-async def cancel_gemini(message: Message, state: FSMContext):
-    if await state.get_state() == StateAssistant.dialog:
-        await state.clear()
-        await message.answer("❌ Gemini остановлен.", reply_markup=main_menu())
 
 # === Gemini Примеры и обработка ===
 
@@ -1081,31 +1058,45 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
         "prompt_example": "Придумай интересный промпт для изображения суперкара"
     }
 
-    data_id = example_id or callback.data
-    prompt = prompt_map.get(data_id)
+data_id = example_id or callback.data
+prompt = prompt_map.get(data_id)
 
-    if not prompt:
-        await callback.answer("❌ Пример не найден", show_alert=True)
-        return
+if not prompt:
+    await callback.answer("❌ Пример не найден", show_alert=True)
+    return
 
-    # учёт использования и лог
-    if not is_admin:
-        increment_usage(user_id)
-        cursor.execute(
-            "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
-            (user_id, "example", prompt)
-        )
-        conn.commit()
-        log_admin_action(user_id, f"Выбрал пример: {data_id} – {prompt}")
-
-    fake_msg = types.Message(
-        message_id=callback.message.message_id,
-        date=callback.message.date,
-        chat=callback.message.chat,
-        from_user=callback.from_user,
-        message_thread_id=callback.message.message_thread_id,
-        text=prompt
-    )
-    await state.set_state(StateAssistant.dialog)
-    await handle_gemini_dialog(fake_msg, state)
+# Проверка клиента ДО генерации
+if client is None:
+    await callback.message.answer("❌ AI-клиент не инициализирован.")
     await callback.answer()
+    return
+
+# Учёт использования
+if not is_admin:
+    increment_usage(user_id)
+    cursor.execute(
+        "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+        (user_id, "example", prompt)
+    )
+    conn.commit()
+    log_admin_action(user_id, f"Выбрал пример: {data_id} – {prompt}")
+
+await callback.message.answer("💭 Думаю...")
+
+try:
+    response_text = await gemini_generate_response(prompt)
+    await callback.message.answer(response_text)
+except Exception as e:
+    logging.exception(f"Ошибка при генерации Gemini-ответа для prompt: {prompt}")
+    await callback.message.answer(f"❌ Ошибка при генерации ответа: {e}")
+
+await callback.answer()
+
+
+async def gemini_generate_response(prompt: str) -> str:
+    response = await client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        timeout=15.0
+    )
+    return response.choices[0].message.content.strip()
