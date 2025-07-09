@@ -659,37 +659,22 @@ async def buy_subscription(message: Message):
         await message.answer(f"❌ Ошибка создания подписки: {e}")
         
 
-# Команда генерации текста
-@dp.message(F.text.in_(["✍️ Сгенерировать текст", "✍️ Цитаты дня"]))
+# === ✍️ Цитаты дня ===
+
+@dp.message(F.text.in_(["✍️ Цитаты дня"]))
 async def handle_text_generation(message: Message, state: FSMContext):
+    await state.clear()
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ])
-
     await state.set_state("generating_text")
     await message.answer("🔄 Генерация текста началась. Пожалуйста, подождите...", reply_markup=control_buttons)
     await generate_text_logic(message, state)
 
-# Остановка генерации (визуально — просто уведомление)
-@dp.callback_query(F.data == "stop_generation")
-async def stop_generation(callback: types.CallbackQuery):
-    await callback.message.answer("⏹ Генерация остановлена.")
-    await callback.answer()
 
-# Возврат в главное меню
-@dp.callback_query(F.data == "back_to_menu")
-async def back_to_menu(callback: types.CallbackQuery):
-    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
-    await callback.answer()
+# === Логика генерации ===
 
-# Отмена через /cancel
-@dp.message(Command("cancel"))
-async def cancel_generation(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
-
-# Логика генерации
 async def generate_text_logic(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
@@ -725,33 +710,38 @@ async def generate_text_logic(message: Message, state: FSMContext):
     finally:
         await state.clear()
 
-# === Обработчики управления ===
+
+# === Управление и отмена ===
 
 @dp.callback_query(F.data == "stop_generation")
-async def stop_generation(callback: types.CallbackQuery):
-    await callback.message.answer("⏹ Генерация остановлена.")
+async def stop_generation(callback: types.CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state == "generating_text":
+        await state.clear()
+        await callback.message.answer("⏹ Генерация текста остановлена.", reply_markup=main_menu())
+    else:
+        await callback.message.answer("ℹ️ Генерация уже завершена или неактивна.", reply_markup=main_menu())
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_menu")
-async def back_to_menu(callback: types.CallbackQuery):
+async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
 
-@dp.callback_query(F.data == "generate_another")
-async def generate_another(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(GenStates.await_image)
-    await callback.message.answer("🖼 Введите новый промпт для изображения:")
-    await callback.answer()
-
 @dp.message(Command("cancel"))
-async def cancel_command(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
+async def cancel_generation(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state == "generating_text":
+        await state.clear()
+        await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
+
 
 # === Генерация изображения ===
 
-@dp.message(F.text.in_(["🎨Создать изображение"]))
+@dp.message(F.text.in_("🎨Создать изображение"))
 async def handle_image_prompt(message: Message, state: FSMContext):
+    await state.clear()  # сбросим, если был активен Gemini
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
@@ -760,37 +750,41 @@ async def handle_image_prompt(message: Message, state: FSMContext):
     sent_msg = await message.answer("🖼 Введите промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
     asyncio.create_task(update_timer(state, sent_msg, message, control_buttons))
 
-async def update_timer(state: FSMContext, sent_msg: types.Message, message: types.Message, control_buttons):
-    for seconds_left in [45, 30, 15]:
-        await asyncio.sleep(15)
-        current_state = await state.get_state()
-        if current_state != GenStates.await_image:
-            return
-        try:
-            await sent_msg.edit_text(f"🖼 Введите промпт для изображения:\n\n⏳ Осталось {seconds_left} секунд", reply_markup=control_buttons)
-        except Exception as e:
-            logging.warning(f"Ошибка при обновлении таймера: {e}")
-            return
-
-    await asyncio.sleep(15)
+@dp.message(Command("cancel"))
+async def cancel_image_generation(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state == GenStates.await_image:
         await state.clear()
-        try:
-            await sent_msg.edit_text("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
-        except Exception:
-            await message.answer("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+        await message.answer("❌ Генерация изображения отменена.", reply_markup=main_menu())
 
-@dp.message(Command("cancel"))
-async def cancel_handler(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
+@dp.callback_query(F.data == "stop_generation")
+async def stop_image_generation(callback: types.CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state == GenStates.await_image:
+        await state.clear()
+        await callback.message.answer("⏹ Генерация изображения остановлена.", reply_markup=main_menu())
+    else:
+        await callback.message.answer("ℹ️ Генерация уже завершена или неактивна.", reply_markup=main_menu())
+    await callback.answer()
+
+@dp.callback_query(F.data == "stop_assistant")
+async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() == StateAssistant.dialog:
+        await state.clear()
+        await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
+    else:
+        await callback.message.answer("ℹ️ Режим уже завершён.", reply_markup=main_menu())
+    await callback.answer()
+
+IGNORED_BUTTONS = {"🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Создать изображение", "✍️ Цитаты дня"}
 
 @dp.message(F.state == GenStates.await_image)
 async def process_image_generation(message: Message, state: FSMContext):
+    if not isinstance(message.text, str) or message.text.strip() in IGNORED_BUTTONS:
+        return  # игнорируем кнопки в режиме ожидания промпта
     try:
         user_id = message.from_user.id
-        prompt = message.text
+        prompt = message.text.strip()
 
         if client is None:
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
@@ -800,18 +794,19 @@ async def process_image_generation(message: Message, state: FSMContext):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
-        if not prompt or not isinstance(prompt, str) or len(prompt.strip()) < 3:
+        if len(prompt) < 3:
             await message.answer("❌ Промпт должен быть не короче 3 символов.")
             return
 
         await message.answer("🤔 Генерирую изображение...")
 
         dalle = await client.images.generate(prompt=prompt, model="dall-e-3", n=1, size="1024x1024")
-        image_url = dalle.data[0].url
 
-        if not image_url:
+        if not dalle.data or not dalle.data[0].url:
             await message.answer("❌ Не удалось получить изображение.")
             return
+
+        image_url = dalle.data[0].url
 
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url) as resp:
@@ -840,49 +835,129 @@ async def process_image_generation(message: Message, state: FSMContext):
     except Exception as e:
         logging.exception("Ошибка генерации изображения:")
         await message.answer(f"❌ Ошибка: {e}")
-        
-# === Gemini AI + Примеры + Webhook ===
 
-@dp.message(F.text == "🌌 Gemini AI")
+@dp.callback_query(F.data == "generate_another")
+async def generate_another(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(GenStates.await_image)
+    await callback.message.answer("🖼 Введите новый промпт для изображения (или /cancel для отмены):")
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
+    await callback.answer()
+
+async def update_timer(state: FSMContext, sent_msg: types.Message, message: types.Message, control_buttons):
+    for seconds_left in [45, 30, 15]:
+        await asyncio.sleep(15)
+        if await state.get_state() != GenStates.await_image:
+            return
+        try:
+            await sent_msg.edit_text(
+                f"🖼 Введите промпт для изображения:\n\n⏳ Осталось {seconds_left} секунд",
+                reply_markup=control_buttons
+            )
+        except Exception as e:
+            logging.warning(f"Ошибка при обновлении таймера: {e}")
+            return
+
+    await asyncio.sleep(15)
+    if await state.get_state() == GenStates.await_image:
+        await state.clear()
+        try:
+            await sent_msg.edit_text("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+        except Exception:
+            await message.answer("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+
+
+# === 🌌 Gemini AI — Умный диалог ===
+
+@dp.message(F.text.in_(["🌌 Gemini AI"]))
 async def start_gemini_dialog(message: Message, state: FSMContext):
-    await message.answer(
-        "🌌 Добро пожаловать в режим Gemini! Напиши свой вопрос или запрос:",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="stop_assistant")]]
-        )
-    )
+    await state.clear()
+    control_buttons = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_assistant")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+    ])
     await state.set_state(StateAssistant.dialog)
+    await message.answer("🌌 Добро пожаловать в режим Gemini! Напиши свой вопрос:", reply_markup=control_buttons)
+
 
 @dp.message(StateAssistant.dialog)
 async def handle_gemini_dialog(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    ensure_user(user_id)
-
-    if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
-        await message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
-        return
+    if message.text in ["🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Создать изображение", "✍️ Цитаты дня"]:
+        return  # игнорируем нажатия кнопок
 
     try:
+        user_id = message.from_user.id
+        prompt = message.text.strip()
+
+        if not prompt or len(prompt) < 2:
+            await message.answer("❌ Введите более развернутый запрос.")
+            return
+
+        ensure_user(user_id)
+
+        if client is None:
+            await message.answer("❌ Ошибка: AI-клиент не настроен.")
+            return
+
+        if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+            await message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
+            return
+
+        await message.answer("💭 Думаю...")
+
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": message.text}],
+            messages=[{"role": "user", "content": prompt}],
             timeout=15.0
         )
-        reply = response.choices[0].message.content
+        reply = response.choices[0].message.content.strip()
         await message.answer(reply)
 
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
-            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "gemini", message.text))
+            cursor.execute(
+                "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+                (user_id, "gemini", prompt)
+            )
             conn.commit()
+
     except Exception as e:
-        logging.error(f"❌ Ошибка в Gemini: {e}", exc_info=True)
+        logging.exception("Ошибка в Gemini:")
         await message.answer(f"❌ Ошибка: {e}")
+
+
+@dp.callback_query(F.data == "stop_assistant")
+async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() == StateAssistant.dialog:
+        await state.clear()
+        await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
+    else:
+        await callback.message.answer("ℹ️ Режим уже завершён.", reply_markup=main_menu())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu_from_gemini(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
+    await callback.answer()
+
+
+@dp.message(Command("cancel"))
+async def cancel_gemini(message: Message, state: FSMContext):
+    if await state.get_state() == StateAssistant.dialog:
+        await state.clear()
+        await message.answer("❌ Gemini остановлен.", reply_markup=main_menu())
 
 # === Gemini Примеры и обработка ===
 
 @dp.message(F.text == "🌠 Gemini Примеры")
 async def gemini_examples(message: Message, state: FSMContext):
+    await state.clear()
     examples = [
         [InlineKeyboardButton(text="Промпт для генерации", callback_data="prompt_example"),
          InlineKeyboardButton(text="Пейзаж", callback_data="img_landscape")],
@@ -897,33 +972,30 @@ async def gemini_examples(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="Фильмы", callback_data="movies_example"),
          InlineKeyboardButton(text="Заработок", callback_data="money_example")],
         [InlineKeyboardButton(text="🌹 Случайный", callback_data="random_example")],
-        [InlineKeyboardButton(text="➔ Новый запрос", callback_data="new_query")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="stop_examples")]
+        [InlineKeyboardButton(text="➕ Свой запрос", callback_data="new_query")],
+        [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_assistant"),
+         InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ]
-    await message.answer("🌠 Выберите пример или задайте свой вопрос:",
-                         reply_markup=InlineKeyboardMarkup(inline_keyboard=examples))
+    await message.answer("🌠 Выберите пример или создайте свой промпт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=examples))
     await state.set_state(StateAssistant.dialog)
+
 
 @dp.callback_query(F.data == "random_example")
 async def gemini_random_example(callback: types.CallbackQuery, state: FSMContext):
     examples = [
         "img_landscape", "img_anime_girl", "img_fantasy_city", "img_modern_office",
-        "img_food_dessert", "img_luxury_car", "img_loft_interior", "weather_example",
-        "news_example", "movies_example", "money_example", "prompt_example"
+        "img_food_dessert", "img_luxury_car", "img_loft_interior",
+        "weather_example", "news_example", "movies_example", "money_example", "prompt_example"
     ]
     await gemini_dispatch(callback, state, random.choice(examples))
 
+
 @dp.callback_query(F.data == "new_query")
 async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("✏️ Введите свой вопрос или тему")
+    await callback.message.answer("✏️ Введите свой вопрос или тему:")
     await state.set_state(StateAssistant.dialog)
     await callback.answer()
 
-@dp.callback_query(F.data == "stop_examples")
-async def stop_examples(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
-    await callback.answer()
 
 @dp.callback_query()
 async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id: str = None):
@@ -931,11 +1003,10 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
     ensure_user(user_id)
 
     if str(user_id) != str(ADMIN_ID) and not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
-        await callback.message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
+        await callback.message.answer("🔒 Лимит исчерпан. Купите подписку 💰", reply_markup=main_menu())
         await callback.answer()
         return
 
-    data_id = example_id or callback.data
     prompt_map = {
         "img_landscape": "Пейзаж на закате, горы, озеро, 8K realism",
         "img_anime_girl": "Аниме девушка с катаной в Cyberpunk стиле",
@@ -950,14 +1021,21 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
         "money_example": "Как заработать в интернете без вложений?",
         "prompt_example": "Придумай интересный промпт для изображения суперкара"
     }
+
+    data_id = example_id or callback.data
     prompt = prompt_map.get(data_id)
+
     if not prompt:
         await callback.answer("❌ Пример не найден", show_alert=True)
         return
 
-    if data_id.startswith("img_"):
-        await process_image_generation(callback.message, prompt)
-    else:
-        await handle_gemini_dialog(await callback.message.reply(prompt), state)
-
+    fake_msg = types.Message(
+        message_id=callback.message.message_id,
+        date=callback.message.date,
+        chat=callback.message.chat,
+        from_user=callback.from_user,
+        message_thread_id=callback.message.message_thread_id,
+        text=prompt
+    )
+    await handle_gemini_dialog(fake_msg, state)
     await callback.answer()
