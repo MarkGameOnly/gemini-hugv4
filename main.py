@@ -751,6 +751,7 @@ async def generate_text_logic(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
+        client = text_client
 
         if client is None:
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
@@ -989,6 +990,7 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
             return
 
         ensure_user(user_id)
+        client = text_client
 
         if client is None:
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
@@ -1067,6 +1069,7 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
     ensure_user(user_id)
+    client = text_client
 
     if client is None:
         await callback.message.answer("❌ AI-клиент не инициализирован.")
