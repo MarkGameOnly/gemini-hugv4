@@ -775,7 +775,7 @@ async def generate_text_logic(message: Message, state: FSMContext):
             await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
             return
 
-        response = await client.chat.completions.create(
+        response = await await client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": "Напиши вдохновляющую цитату"}],
             max_tokens=100,
@@ -1073,7 +1073,7 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
 
         await message.answer("💭 Думаю...")
 
-        response = await client.chat.completions.create(
+        response = await await client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             timeout=15.0
@@ -1219,7 +1219,7 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
 
 
 async def gemini_generate_response(prompt: str) -> str:
-    response = await client.chat.completions.create(
+    response = await await client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         timeout=15.0
