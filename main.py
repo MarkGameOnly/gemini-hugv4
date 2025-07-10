@@ -50,7 +50,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_API_KEY_IMAGE=os.getenv("OPENAI_API_KEY_IMAGE")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
-
 print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")
 
 # === Инициализация базы данных ===
