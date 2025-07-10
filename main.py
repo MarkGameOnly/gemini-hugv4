@@ -122,7 +122,8 @@ dp.message.middleware(EnsureUserMiddleware())
 dp.callback_query.middleware(EnsureUserMiddleware())
 
 timeout = httpx.Timeout(60.0, connect=20.0)
-client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=timeout)
+client = AsyncOpenAI
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY_IMAGE", ""))(api_key=OPENAI_API_KEY, timeout=timeout)
 
 # === Вспомогательные функции ===
 
@@ -819,29 +820,7 @@ async def cancel_generation(message: Message, state: FSMContext):
         await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
 
 
-
 # === Генерация изображения ===
-import base64
-
-async def generate_image_huggingface(prompt: str) -> bytes:
-    headers = {
-        "Authorization": f"Bearer {HUGGINGFACE_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {"inputs": prompt}
-    url = "https://hf.space/embed/MarkOnly/stabilityai-stable-diffusion-3.5-large/api/predict"
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload) as response:
-            if response.status == 200:
-                result = await response.json()
-                if "data" in result and len(result["data"]) > 0:
-                    img_base64 = result["data"][0].split(",")[-1]
-                    return base64.b64decode(img_base64)
-                else:
-                    raise Exception("❌ Hugging Face не вернул изображение.")
-            else:
-                raise Exception(f"❌ Hugging Face ответил статусом {response.status}")
 
 @dp.message(F.text.in_(["🎨Создать изображение"]))
 async def handle_image_prompt(message: Message, state: FSMContext):
@@ -855,52 +834,130 @@ async def handle_image_prompt(message: Message, state: FSMContext):
     timer_task = asyncio.create_task(update_timer(state, sent_msg, message, control_buttons))
     await state.update_data(timer_task=timer_task)
 
+
+@dp.message(Command("cancel"))
+async def cancel_image_generation(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
+
+
+@dp.callback_query(F.data == "stop_generation")
+async def stop_image_generation(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("⏹ Генерация остановлена.", reply_markup=main_menu())
+    await callback.answer()
+
+
+async def update_timer(state: FSMContext, sent_msg: types.Message, message: types.Message, control_buttons):
+    prompts = [
+        ("⏳ Осталось 90 секунд", 30),
+        ("☺️ Осталось чуть-чуть", 30),
+        ("🔥 Уже готовлю для вас супер-изображение", 30),
+        ("⚠️ Последний шанс ввести промпт (осталось 30 сек)", 30)
+    ]
+    try:
+        for text, wait_time in prompts:
+            await asyncio.sleep(wait_time)
+            if await state.get_state() != GenStates.await_image:
+                return
+            user_data = await state.get_data()
+            if user_data.get("prompt_received"):
+                return
+            try:
+                await sent_msg.edit_text(f"🖼 Введите промпт для изображения:\n\n{text}", reply_markup=control_buttons)
+            except Exception as e:
+                logging.warning(f"Ошибка при обновлении таймера: {e}")
+                return
+
+        if await state.get_state() == GenStates.await_image:
+            await state.clear()
+            try:
+                await sent_msg.edit_text("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+            except Exception:
+                await message.answer("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+    except asyncio.CancelledError:
+        return
+
+
 @dp.message(F.state == GenStates.await_image)
 async def process_image_generation(message: Message, state: FSMContext):
-    prompt = message.text.strip()
-    if len(prompt) < 3:
+    text = message.text.strip()
+    if not text or len(text) < 3:
         await message.answer("❌ Промпт должен быть не короче 3 символов.")
         return
 
     await state.update_data(prompt_received=True)
-    timer_task = (await state.get_data()).get("timer_task")
+
+    # Остановим таймер
+    data = await state.get_data()
+    timer_task = data.get("timer_task")
     if timer_task:
         timer_task.cancel()
 
+    prompt = text
     user_id = message.from_user.id
+
+    if client is None:
+        await message.answer("❌ Ошибка: AI-клиент не настроен.")
+        await state.clear()
+        return
+
     if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
         await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
         await state.clear()
         return
 
-    await message.answer("🧠 Генерирую изображение через Hugging Face, подождите...")
+    await message.answer("🧠 Генерирую изображение, подождите...")
+    await asyncio.sleep(1.5)
+    await message.answer("☺️ Осталось чуть-чуть...")
+    await asyncio.sleep(1.5)
+    await message.answer("🔥 Уже готовлю для вас супер-изображение")
 
     try:
-        image_bytes = await generate_image_huggingface(prompt)
-        if not image_bytes:
-            await message.answer("⚠️ Не удалось сгенерировать изображение.")
+        dalle = await openai_image.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            quality="hd",
+            response_format="url"
+        )
+        image_url = dalle.data[0].url if dalle and dalle.data else None
+
+        if not image_url:
+            await message.answer("⚠️ Не удалось получить изображение. Попробуйте позже.")
             await state.clear()
             return
 
-        await message.answer_photo(
-            types.BufferedInputFile(image_bytes, filename="image.png"),
-            caption="🖼 Вот ваше изображение!",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🎨 Ещё одно изображение", callback_data="generate_another")],
-                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-            ])
-        )
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as resp:
+                if resp.status == 200:
+                    image_bytes = await resp.read()
+                    await message.answer_photo(
+                        types.BufferedInputFile(image_bytes, filename="image.png"),
+                        caption="🖼 Вот ваше изображение!",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="🎨 Ещё одно изображение", callback_data="generate_another")],
+                            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+                        ])
+                    )
+                    await message.answer("✅ Ваше изображение готово!")
+                else:
+                    await message.answer("❌ Не удалось загрузить изображение.")
+                    await state.clear()
+                    return
 
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
             cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
             conn.commit()
 
-    except Exception as e:
-        logging.error(f"Ошибка генерации изображения через HF: {e}")
-        await message.answer(f"❌ Ошибка генерации: {e}")
-    finally:
         await state.clear()
+
+    except Exception as e:
+        logging.error(f"❌ Ошибка при генерации изображения: {e}")
+        await message.answer("⚠️ Произошла ошибка при генерации изображения. Попробуйте позже.")
+        await state.clear()
+
 
 @dp.callback_query(F.data == "generate_another")
 async def generate_another(callback: types.CallbackQuery, state: FSMContext):
@@ -910,29 +967,67 @@ async def generate_another(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ])
-    sent_msg = await callback.message.answer("🖼 Введите новый промпт для изображения (или /cancel):", reply_markup=control_buttons)
+    sent_msg = await callback.message.answer("🖼 Введите новый промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
     timer_task = asyncio.create_task(update_timer(state, sent_msg, callback.message, control_buttons))
     await state.update_data(timer_task=timer_task)
     await callback.answer()
 
-@dp.message(Command("cancel"))
-async def cancel_image_generation(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
-
-@dp.callback_query(F.data == "stop_generation")
-async def stop_image_generation(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.answer("⏹ Генерация остановлена.", reply_markup=main_menu())
-    await callback.answer()
 
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
-# === 🌌 Gemini AI — Умный диалог ===
 
+
+# === Обработчик "🖼 Создать изображение (OpenAI DALL·E)" ===
+@dp.message(F.text == "🖼 Создать изображение")
+async def handle_image_prompt_dalle(message: Message, state: FSMContext):
+    await state.set_state(GenStates.await_image)
+    await message.answer("🖼️ Напишите промпт для изображения")
+
+@dp.message(GenStates.await_image)
+async def generate_image_dalle(message: Message, state: FSMContext):
+    try:
+        user_id = message.from_user.id
+        ensure_user(user_id)
+
+        if not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
+            await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
+            return
+
+        prompt = message.text.strip()
+        await message.answer("🧠 Генерирую изображение через DALL·E, подождите...")
+
+        response = await openai_client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            quality="hd",
+            response_format="url"
+        )
+        image_url = response.data[0].url
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as img_resp:
+                if img_resp.status == 200:
+                    image_bytes = await img_resp.read()
+                    await message.answer_photo(types.BufferedInputFile(image_bytes, filename="image.png"))
+                else:
+                    await message.answer("❌ Не удалось загрузить изображение с DALL·E")
+
+        cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
+        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
+        conn.commit()
+
+    except Exception as e:
+        logging.error(f"DALL·E Ошибка: {e}")
+        await message.answer(f"❌ Ошибка генерации изображения: {e}")
+    finally:
+        await state.clear()
+
+
+# === 🌌 Gemini AI — Умный диалог ===
 
 @dp.message(F.text.in_(["🌌 Gemini AI"]))
 async def start_gemini_dialog(message: Message, state: FSMContext):
