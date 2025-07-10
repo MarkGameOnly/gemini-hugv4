@@ -55,7 +55,7 @@ print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")
 
 # === OpenAI клиенты ===
 text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-image_client = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
+openai_image = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
 
 # === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
@@ -881,8 +881,8 @@ async def process_image_generation(message: Message, state: FSMContext):
     prompt = text
     user_id = message.from_user.id
 
-    if client is None:
-        await message.answer("❌ Ошибка: AI-клиент не настроен.")
+    if openai_image is None:
+        await message.answer("❌ Ошибка: клиент изображения не настроен.")
         await state.clear()
         return
 
