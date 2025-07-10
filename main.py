@@ -28,6 +28,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.utils.markdown import hbold
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from openai import AsyncOpenAI
+
 from crypto import create_invoice, check_invoice
 
 # === Настройка логирования ===
@@ -44,21 +45,24 @@ logging.basicConfig(
 # === Загрузка переменных окружения ===
 load_dotenv()
 
-# === Получение переменных из .env ===
+# === Переменные окружения ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_API_KEY_IMAGE=os.getenv("OPENAI_API_KEY_IMAGE")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY_IMAGE = os.getenv("OPENAI_API_KEY_IMAGE")
 print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")
+
+# === OpenAI клиенты ===
+text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+image_client = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
 
 # === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 FREE_USES_LIMIT = 10
 
-def init_db(): 
-    # Таблица пользователей
+def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -68,8 +72,6 @@ def init_db():
             joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-
-    # Таблица истории генераций
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,56 +81,41 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-
-    # 🛡 Добавляем колонку joined_at, если её нет (на случай старой базы)
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     except sqlite3.OperationalError:
-        pass  # Колонка уже существует
+        pass
 
-    # 🛡 Добавляем админа, если его нет
     cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (ADMIN_ID,))
     if not cursor.fetchone():
         cursor.execute(
             "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 1, NULL, ?)",
             (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"))
         )
-
     conn.commit()
 
-
-# === Middleware для автоматического ensure_user ===
+# === Middleware — EnsureUser ===
 class EnsureUserMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         if isinstance(event, types.Message) or isinstance(event, types.CallbackQuery):
             user_id = event.from_user.id
             cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
             if not cursor.fetchone():
-                is_admin_user = int(user_id) == ADMIN_ID
+                is_admin = int(user_id) == ADMIN_ID
                 cursor.execute(
                     "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, ?, NULL, ?)",
-                    (user_id, 1 if is_admin_user else 0, datetime.now().strftime("%Y-%m-%d"))
+                    (user_id, 1 if is_admin else 0, datetime.now().strftime("%Y-%m-%d"))
                 )
                 conn.commit()
         return await handler(event, data)
 
-    
-# === Инициализация Telegram бота и OpenAI клиента ===
+# === Инициализация Telegram бота ===
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 dp.message.middleware(EnsureUserMiddleware())
 dp.callback_query.middleware(EnsureUserMiddleware())
-
-timeout = httpx.Timeout(60.0, connect=20.0)
-client = AsyncOpenAI
-timeout = httpx.Timeout(60.0, connect=20.0)
-openai_client = AsyncOpenAI(
-    api_key=os.getenv("OPENAI_API_KEY_IMAGE", ""),
-    timeout=timeout
-)
-
 
 
 # === Вспомогательные функции ===
@@ -746,23 +733,21 @@ async def buy_subscription(message: Message):
 
 # === ✍️ Цитаты дня ===
 
-@dp.message(F.text.in_(["✍️ Цитаты дня"]))
+@dp.message(F.text.in_(['✍️ Цитаты дня']))
 async def handle_text_generation(message: Message, state: FSMContext):
-    await state.clear()
     await state.clear()
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ])
     await state.set_state("generating_text")
-    await message.answer("🔄 Генерация текста началась. Пожалуйста, подождите...", reply_markup=control_buttons)
+    await message.answer("🔄 Генерация цитаты...", reply_markup=control_buttons)
     await generate_text_logic(message, state)
 
 
 # === Логика генерации ===
 
 async def generate_text_logic(message: Message, state: FSMContext):
-    await state.clear()
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
@@ -772,28 +757,28 @@ async def generate_text_logic(message: Message, state: FSMContext):
             return
 
         if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
-            await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
+            await message.answer("🔐 Лимит исчерпан. Купите подписку 💰")
             return
 
         response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": "Напиши вдохновляющую цитату"}],
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "Напиши вдохновляющую цитату дня"}],
             max_tokens=100,
         )
         text = response.choices[0].message.content.strip()
-        await message.answer(f"📝 {text}")
+        await message.answer(f"🗋 Цитата дня:\n{text}")
 
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
             cursor.execute(
                 "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
-                (user_id, "text", "вдохновляющая цитата")
+                (user_id, "text", "цитата дня")
             )
             conn.commit()
 
     except Exception as e:
         logging.exception("Ошибка генерации текста:")
-        await message.answer(f"❌ Ошибка генерации текста: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
     finally:
         await state.clear()
 
@@ -803,16 +788,11 @@ async def generate_text_logic(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "stop_generation")
 async def stop_generation(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    current_state = await state.get_state()
-    if current_state == "generating_text":
-        await state.clear()
-        await callback.message.answer("⏹ Генерация текста остановлена.", reply_markup=main_menu())
-    else:
-        await callback.message.answer("ℹ️ Генерация уже завершена или неактивна.", reply_markup=main_menu())
+    await callback.message.answer("⏹ Генерация остановлена.", reply_markup=main_menu())
     await callback.answer()
 
+@dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
     await state.clear()
     await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
@@ -820,10 +800,7 @@ async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(Command("cancel"))
 async def cancel_generation(message: Message, state: FSMContext):
     await state.clear()
-    current_state = await state.get_state()
-    if current_state == "generating_text":
-        await state.clear()
-        await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
+    await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
 
 
 # === Генерация изображения ===
@@ -985,59 +962,10 @@ async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMConte
     await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
 
-
-# === Обработчик "🖼 Создать изображение (OpenAI DALL·E)" ===
-@dp.message(F.text == "🖼 Создать изображение")
-async def handle_image_prompt_dalle(message: Message, state: FSMContext):
-    await state.set_state(GenStates.await_image)
-    await message.answer("🖼️ Напишите промпт для изображения")
-
-@dp.message(GenStates.await_image)
-async def generate_image_dalle(message: Message, state: FSMContext):
-    try:
-        user_id = message.from_user.id
-        ensure_user(user_id)
-
-        if not is_subscribed(user_id) and get_usage_count(user_id) >= FREE_USES_LIMIT:
-            await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
-            return
-
-        prompt = message.text.strip()
-        await message.answer("🧠 Генерирую изображение через DALL·E, подождите...")
-
-        response = await openai_client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024",
-            quality="hd",
-            response_format="url"
-        )
-        image_url = response.data[0].url
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(image_url) as img_resp:
-                if img_resp.status == 200:
-                    image_bytes = await img_resp.read()
-                    await message.answer_photo(types.BufferedInputFile(image_bytes, filename="image.png"))
-                else:
-                    await message.answer("❌ Не удалось загрузить изображение с DALL·E")
-
-        cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?", (user_id,))
-        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
-        conn.commit()
-
-    except Exception as e:
-        logging.error(f"DALL·E Ошибка: {e}")
-        await message.answer(f"❌ Ошибка генерации изображения: {e}")
-    finally:
-        await state.clear()
-
-
 # === 🌌 Gemini AI — Умный диалог ===
 
-@dp.message(F.text.in_(["🌌 Gemini AI"]))
+@dp.message(F.text.in_("🌌 Gemini AI"))
 async def start_gemini_dialog(message: Message, state: FSMContext):
-    await state.clear()
     await state.clear()
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_assistant")],
@@ -1049,9 +977,8 @@ async def start_gemini_dialog(message: Message, state: FSMContext):
 
 @dp.message(StateAssistant.dialog)
 async def handle_gemini_dialog(message: Message, state: FSMContext):
-    await state.clear()
     if message.text in ["🌌 Gemini AI", "🌠 Gemini Примеры", "🎨Создать изображение", "✍️ Цитаты дня"]:
-        return  # игнорируем нажатия кнопок
+        return
 
     try:
         user_id = message.from_user.id
@@ -1074,9 +1001,8 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         await message.answer("💭 Думаю...")
 
         response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            timeout=15.0
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
         )
         reply = response.choices[0].message.content.strip()
         await message.answer(reply)
@@ -1094,11 +1020,26 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {e}")
 
 
+# === Обработчик остановки Gemini ===
+@dp.callback_query(F.data == "stop_assistant")
+async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
+    await callback.answer()
+
+
 # === Gemini Примеры и обработка ===
 
+# === 🌠 Gemini Примеры ===
 @dp.message(F.text == "🌠 Gemini Примеры")
 async def gemini_examples(message: Message, state: FSMContext):
-    await state.clear()
     await state.clear()
     examples = [
         [InlineKeyboardButton(text="Промпт для генерации", callback_data="prompt_example"),
@@ -1114,59 +1055,26 @@ async def gemini_examples(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="Фильмы", callback_data="movies_example"),
          InlineKeyboardButton(text="Заработок", callback_data="money_example")],
         [InlineKeyboardButton(text="🌹 Случайный", callback_data="random_example")],
-        [InlineKeyboardButton(text="➕ Свой запрос", callback_data="new_query")],
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_assistant"),
          InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ]
-    await message.answer("🌠 Выберите пример или создайте свой промпт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=examples))
+    await message.answer("🌠 Выберите пример для Gemini:", reply_markup=InlineKeyboardMarkup(inline_keyboard=examples))
     await state.set_state(StateAssistant.dialog)
 
-# === Обработчик остановки до общего dispatch ===
-@dp.callback_query(F.data == "stop_assistant")
-async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    if await state.get_state() == StateAssistant.dialog:
-        await state.clear()
-        await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
-    else:
-        await callback.message.answer("ℹ️ Режим уже завершён.", reply_markup=main_menu())
-    await callback.answer()
 
-
-@dp.callback_query(F.data == "random_example")
-async def gemini_random_example(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    examples = [
-        "img_landscape", "img_anime_girl", "img_fantasy_city", "img_modern_office",
-        "img_food_dessert", "img_luxury_car", "img_loft_interior",
-        "weather_example", "news_example", "movies_example", "money_example", "prompt_example"
-    ]
-    await gemini_dispatch(callback, state, random.choice(examples))
-
-
-@dp.callback_query(F.data == "new_query")
-async def gemini_new_query(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    user_id = callback.from_user.id
-    if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
-        await callback.message.answer("💸 Любой запрос — за ваши деньги! Купите подписку 🪙")
-        await callback.answer()
-        return
-    await callback.message.answer("✏️ Введите свой вопрос или тему:")
-    await state.set_state(StateAssistant.dialog)
-    await callback.answer()
-
-# === Основной обработчик генерации ===
 @dp.callback_query()
-async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, example_id: str = None):
+async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
-    is_admin = str(user_id) == str(ADMIN_ID)
-
     ensure_user(user_id)
 
-    if not is_admin and is_limited(user_id):
-        await callback.message.answer("🔒 Лимит исчерпан. Купите подписку 💰", reply_markup=main_menu())
+    if client is None:
+        await callback.message.answer("❌ AI-клиент не инициализирован.")
+        await callback.answer()
+        return
+
+    if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
+        await callback.message.answer("🔒 Лимит исчерпан. Купите подписку 💰")
         await callback.answer()
         return
 
@@ -1182,46 +1090,39 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext, exam
         "news_example": "Что случилось в мире за последние 24 часа?",
         "movies_example": "Что посмотреть из новых фильмов?",
         "money_example": "Как заработать в интернете без вложений?",
-        "prompt_example": "Придумай интересный промпт для изображения суперкара"
+        "prompt_example": "Придумай интересный промпт для изображения суперкара",
+        "random_example": random.choice([
+            "Какая погода в Алматы завтра?",
+            "Что случилось в мире за последние 24 часа?",
+            "Что посмотреть из новых фильмов?",
+            "Как заработать в интернете без вложений?"
+        ])
     }
 
-    data_id = example_id or callback.data
-    prompt = prompt_map.get(data_id)
-
+    prompt = prompt_map.get(callback.data)
     if not prompt:
         await callback.answer("❌ Пример не найден", show_alert=True)
         return
 
-    if client is None:
-        await callback.message.answer("❌ AI-клиент не инициализирован.")
-        await callback.answer()
-        return
-
-    if not is_admin:
-        increment_usage(user_id)
-        cursor.execute(
-            "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
-            (user_id, "example", prompt)
-        )
-        conn.commit()
-        log_admin_action(user_id, f"Выбрал пример: {data_id} – {prompt}")
-
-    await callback.message.answer("💭 Думаю...")
-
     try:
-        response_text = await gemini_generate_response(prompt)
-        await callback.message.answer(response_text)
+        await callback.message.answer("💭 Думаю...")
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        reply = response.choices[0].message.content.strip()
+        await callback.message.answer(reply)
+
+        if str(user_id) != str(ADMIN_ID):
+            increment_usage(user_id)
+            cursor.execute(
+                "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+                (user_id, "example", prompt)
+            )
+            conn.commit()
+
     except Exception as e:
         logging.exception(f"Ошибка при генерации Gemini-ответа для prompt: {prompt}")
         await callback.message.answer(f"❌ Ошибка при генерации ответа: {e}")
 
     await callback.answer()
-
-
-async def gemini_generate_response(prompt: str) -> str:
-    response = await client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        timeout=15.0
-    )
-    return response.choices[0].message.content.strip()
