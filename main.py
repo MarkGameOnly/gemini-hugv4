@@ -870,8 +870,9 @@ async def update_timer(state: FSMContext, sent_msg: types.Message, message: type
 
 @dp.message(F.state == GenStates.await_image)
 async def process_image_generation(message: Message, state: FSMContext):
-    await state.clear()
     text = message.text.strip()
+    await state.update_data(prompt_received=True)  # 💡 Помечаем получение промпта сразу
+    await state.clear()
 
     if not text or len(text) < 3:
         await message.answer("❌ Промпт должен быть не короче 3 символов.")
@@ -879,8 +880,6 @@ async def process_image_generation(message: Message, state: FSMContext):
 
     prompt = text
     user_id = message.from_user.id
-
-    await state.update_data(prompt_received=True)
 
     if client is None:
         await message.answer("❌ Ошибка: AI-клиент не настроен.")
@@ -926,8 +925,6 @@ async def process_image_generation(message: Message, state: FSMContext):
             increment_usage(user_id)
             cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
             conn.commit()
-
-        await state.clear()
 
     except Exception as e:
         logging.error(f"❌ Ошибка при генерации изображения: {e}")
