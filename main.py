@@ -47,8 +47,10 @@ load_dotenv()
 # === Получение переменных из .env ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY_IMAGE=os.getenv("OPENAI_API_KEY_IMAGE")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
+
 print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")
 
 # === Инициализация базы данных ===
@@ -912,7 +914,7 @@ async def process_image_generation(message: Message, state: FSMContext):
     await message.answer("🔥 Уже готовлю для вас супер-изображение")
 
     try:
-        dalle = await client.images.generate(
+        dalle = await openai_image.images.generate(
             model="dall-e-3",
             prompt=prompt,
             size="1024x1024",
