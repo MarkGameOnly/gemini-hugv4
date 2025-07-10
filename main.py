@@ -828,10 +828,7 @@ async def handle_image_prompt(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ])
     await state.set_state(GenStates.await_image)
-    sent_msg = await message.answer(
-        "🖼 Введите промпт для изображения (или /cancel для отмены):",
-        reply_markup=control_buttons
-    )
+    sent_msg = await message.answer("🖼 Введите промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
     asyncio.create_task(update_timer(state, sent_msg, message, control_buttons))
 
 
@@ -849,22 +846,27 @@ async def stop_image_generation(callback: types.CallbackQuery, state: FSMContext
 
 
 async def update_timer(state: FSMContext, sent_msg: types.Message, message: types.Message, control_buttons):
-    for seconds_left in [45, 30, 15]:
-        await asyncio.sleep(15)  # ⏱ Ожидание между этапами
+    prompts = [
+        ("⏳ Осталось 90 секунд", 30),
+        ("☺️ Осталось чуть-чуть", 30),
+        ("🔥 Уже готовлю для вас супер-изображение", 30),
+        ("⚠️ Последний шанс ввести промпт (осталось 30 сек)", 30)
+    ]
+
+    for text, wait_time in prompts:
+        await asyncio.sleep(wait_time)
         if await state.get_state() != GenStates.await_image:
             return
         user_data = await state.get_data()
         if user_data.get("prompt_received"):
             return
         try:
-            await sent_msg.edit_text(
-                f"🖼 Введите промпт для изображения:\n\n⏳ Осталось {seconds_left} секунд",
-                reply_markup=control_buttons
-            )
+            await sent_msg.edit_text(f"🖼 Введите промпт для изображения:\n\n{text}", reply_markup=control_buttons)
         except Exception as e:
             logging.warning(f"Ошибка при обновлении таймера: {e}")
             return
 
+    # Время истекло
     if await state.get_state() == GenStates.await_image:
         await state.clear()
         try:
@@ -881,22 +883,24 @@ async def process_image_generation(message: Message, state: FSMContext):
         await message.answer("❌ Промпт должен быть не короче 3 символов.")
         return
 
-    await state.update_data(prompt_received=True)  # 🧠 Сигнал таймеру, что промпт получен
+    await state.update_data(prompt_received=True)  # 💡 Ставим флаг ДО очистки
 
     prompt = text
     user_id = message.from_user.id
 
     if client is None:
         await message.answer("❌ Ошибка: AI-клиент не настроен.")
-        await state.clear()
         return
 
     if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
         await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
-        await state.clear()
         return
 
-    await message.answer("🎨 Генерирую изображение...")
+    await message.answer("🧠 Генерирую изображение, подождите...")
+    await asyncio.sleep(1.5)
+    await message.answer("☺️ Осталось чуть-чуть...")
+    await asyncio.sleep(1.5)
+    await message.answer("🔥 Уже готовлю для вас супер-изображение")
 
     try:
         dalle = await client.images.generate(
@@ -925,17 +929,14 @@ async def process_image_generation(message: Message, state: FSMContext):
                             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
                         ])
                     )
+                    await message.answer("✅ Ваше изображение готово!")
                 else:
                     await message.answer("❌ Не удалось загрузить изображение.")
-                    await state.clear()
                     return
 
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
-            cursor.execute(
-                "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
-                (user_id, "image", prompt)
-            )
+            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
             conn.commit()
 
         await state.clear()
@@ -950,6 +951,7 @@ async def process_image_generation(message: Message, state: FSMContext):
 async def generate_another(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(GenStates.await_image)
+
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
