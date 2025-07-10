@@ -53,9 +53,18 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_API_KEY_IMAGE = os.getenv("OPENAI_API_KEY_IMAGE")
 print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")
 
+from openai import AsyncOpenAI, APITimeoutError
+
+# === OpenAI клиенты ===
+text_client = AsyncOpenAI(
+    api_key=OPENAI_API_KEY,
+    http_client=httpx.AsyncClient(timeout=httpx.Timeout(30.0))  # увеличение таймаута
+)
+openai_image = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
+
 # === OpenAI клиенты ===
 text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-openai_image = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
+image_client = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
 
 # === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
@@ -881,8 +890,8 @@ async def process_image_generation(message: Message, state: FSMContext):
     prompt = text
     user_id = message.from_user.id
 
-    if openai_image is None:
-        await message.answer("❌ Ошибка: клиент изображения не настроен.")
+    if client is None:
+        await message.answer("❌ Ошибка: AI-клиент не настроен.")
         await state.clear()
         return
 
