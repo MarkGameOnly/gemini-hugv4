@@ -123,7 +123,13 @@ dp.callback_query.middleware(EnsureUserMiddleware())
 
 timeout = httpx.Timeout(60.0, connect=20.0)
 client = AsyncOpenAI
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY_IMAGE", ""))(api_key=OPENAI_API_KEY, timeout=timeout)
+timeout = httpx.Timeout(60.0, connect=20.0)
+openai_client = AsyncOpenAI(
+    api_key=os.getenv("OPENAI_API_KEY_IMAGE", ""),
+    timeout=timeout
+)
+
+
 
 # === Вспомогательные функции ===
 
