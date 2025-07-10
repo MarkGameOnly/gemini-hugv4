@@ -829,7 +829,8 @@ async def handle_image_prompt(message: Message, state: FSMContext):
     ])
     await state.set_state(GenStates.await_image)
     sent_msg = await message.answer("🖼 Введите промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
-    asyncio.create_task(update_timer(state, sent_msg, message, control_buttons))
+    timer_task = asyncio.create_task(update_timer(state, sent_msg, message, control_buttons))
+    await state.update_data(timer_task=timer_task)
 
 
 @dp.message(Command("cancel"))
@@ -852,48 +853,56 @@ async def update_timer(state: FSMContext, sent_msg: types.Message, message: type
         ("🔥 Уже готовлю для вас супер-изображение", 30),
         ("⚠️ Последний шанс ввести промпт (осталось 30 сек)", 30)
     ]
+    try:
+        for text, wait_time in prompts:
+            await asyncio.sleep(wait_time)
+            if await state.get_state() != GenStates.await_image:
+                return
+            user_data = await state.get_data()
+            if user_data.get("prompt_received"):
+                return
+            try:
+                await sent_msg.edit_text(f"🖼 Введите промпт для изображения:\n\n{text}", reply_markup=control_buttons)
+            except Exception as e:
+                logging.warning(f"Ошибка при обновлении таймера: {e}")
+                return
 
-    for text, wait_time in prompts:
-        await asyncio.sleep(wait_time)
-        if await state.get_state() != GenStates.await_image:
-            return
-        user_data = await state.get_data()
-        if user_data.get("prompt_received"):
-            return
-        try:
-            await sent_msg.edit_text(f"🖼 Введите промпт для изображения:\n\n{text}", reply_markup=control_buttons)
-        except Exception as e:
-            logging.warning(f"Ошибка при обновлении таймера: {e}")
-            return
-
-    # Время истекло
-    if await state.get_state() == GenStates.await_image:
-        await state.clear()
-        try:
-            await sent_msg.edit_text("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
-        except Exception:
-            await message.answer("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+        if await state.get_state() == GenStates.await_image:
+            await state.clear()
+            try:
+                await sent_msg.edit_text("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+            except Exception:
+                await message.answer("⌛️ Время истекло. Генерация отменена.", reply_markup=main_menu())
+    except asyncio.CancelledError:
+        return
 
 
 @dp.message(F.state == GenStates.await_image)
 async def process_image_generation(message: Message, state: FSMContext):
     text = message.text.strip()
-
     if not text or len(text) < 3:
         await message.answer("❌ Промпт должен быть не короче 3 символов.")
         return
 
-    await state.update_data(prompt_received=True)  # 💡 Ставим флаг ДО очистки
+    await state.update_data(prompt_received=True)
+
+    # Остановим таймер
+    data = await state.get_data()
+    timer_task = data.get("timer_task")
+    if timer_task:
+        timer_task.cancel()
 
     prompt = text
     user_id = message.from_user.id
 
     if client is None:
         await message.answer("❌ Ошибка: AI-клиент не настроен.")
+        await state.clear()
         return
 
     if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
         await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
+        await state.clear()
         return
 
     await message.answer("🧠 Генерирую изображение, подождите...")
@@ -932,6 +941,7 @@ async def process_image_generation(message: Message, state: FSMContext):
                     await message.answer("✅ Ваше изображение готово!")
                 else:
                     await message.answer("❌ Не удалось загрузить изображение.")
+                    await state.clear()
                     return
 
         if str(user_id) != str(ADMIN_ID):
@@ -951,12 +961,20 @@ async def process_image_generation(message: Message, state: FSMContext):
 async def generate_another(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(GenStates.await_image)
-
     control_buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ])
-    await callback.message.answer("🖼 Введите новый промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
+    sent_msg = await callback.message.answer("🖼 Введите новый промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
+    timer_task = asyncio.create_task(update_timer(state, sent_msg, callback.message, control_buttons))
+    await state.update_data(timer_task=timer_task)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu_from_image(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
 
 # === 🌌 Gemini AI — Умный диалог ===
