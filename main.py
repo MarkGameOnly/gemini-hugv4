@@ -509,6 +509,143 @@ async def cmd_profile(message: Message):
 
 # === Админка ===
 
+# === Импорты стандартных библиотек ===
+import os
+import asyncio
+import logging
+import sqlite3
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Request, APIRouter
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.filters import Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.session.aiohttp import AiohttpSession
+from dotenv import load_dotenv
+
+# === Загрузка переменных окружения ===
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
+
+# === Инициализация бота и хранилища ===
+session = AiohttpSession()
+bot = Bot(token=BOT_TOKEN, session=session)
+storage = MemoryStorage()
+dp = Dispatcher(bot=bot, storage=storage)
+
+# === Инициализация базы данных ===
+conn = sqlite3.connect("users.db", check_same_thread=False)
+cursor = conn.cursor()
+
+# === Состояния ===
+class AdminStates(StatesGroup):
+    awaiting_broadcast_content = State()
+    awaiting_user_id_for_grant = State()
+    awaiting_check_subscription_id = State()
+
+# === Клавиатура админки ===
+def admin_inline_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📜 Логи", callback_data="view_logs")],
+        [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")],
+        [InlineKeyboardButton(text="📄 Admin лог", callback_data="view_admin_log")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="start_broadcast")],
+        [InlineKeyboardButton(text="📬 Отправить пост", callback_data="start_broadcast")],
+        [InlineKeyboardButton(text="🔓 Выдать доступ вручную", callback_data="grant_access_manual")],
+        [InlineKeyboardButton(text="📋 Список подписчиков", callback_data="list_subscribers")],
+        [InlineKeyboardButton(text="🔍 Проверить подписку", callback_data="check_subscription")]
+    ])
+
+# === Проверка на админа ===
+def is_admin(user_id: int) -> bool:
+    return str(user_id) == str(ADMIN_ID)
+
+# === Активация подписки ===
+def activate_subscription(user_id: int):
+    expires = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    cursor.execute(
+        "UPDATE users SET subscribed = 1, subscription_expires = ? WHERE user_id = ?",
+        (expires, user_id)
+    )
+    conn.commit()
+
+# === Лог действий администратора ===
+def log_admin_action(user_id: int, action: str):
+    with open("admin.log", "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now().isoformat()} — ADMIN [{user_id}]: {action}\n")
+
+# === Обработчик кнопки "Выдать доступ вручную" ===
+@dp.callback_query(F.data == "grant_access_manual")
+async def manual_grant_access(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+    await state.set_state(AdminStates.awaiting_user_id_for_grant)
+    await callback.message.answer("🔐 Введите ID пользователя, которому вы хотите вручную выдать подписку:")
+    await callback.answer()
+
+# === Обработчик ввода user_id для подписки ===
+@dp.message(AdminStates.awaiting_user_id_for_grant)
+async def process_manual_grant(message: Message, state: FSMContext):
+    await state.clear()
+    try:
+        user_id = int(message.text.strip())
+        activate_subscription(user_id)
+        await message.answer(f"✅ Подписка вручную активирована для пользователя <code>{user_id}</code> на 30 дней.", parse_mode="HTML")
+        log_admin_action(message.from_user.id, f"Выдал вручную подписку для {user_id}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при выдаче доступа: {e}")
+
+# === Обработчик кнопки "Список подписчиков" ===
+@dp.callback_query(F.data == "list_subscribers")
+async def list_subscribers(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+    cursor.execute("SELECT user_id, subscription_expires FROM users WHERE subscribed = 1")
+    rows = cursor.fetchall()
+    if not rows:
+        await callback.message.answer("📭 Нет активных подписчиков.")
+    else:
+        msg = "📋 <b>Подписчики:</b>\n\n" + "\n".join([
+            f"<code>{uid}</code> до {exp}" for uid, exp in rows
+        ])
+        await callback.message.answer(msg, parse_mode="HTML")
+    await callback.answer()
+
+# === Обработчик кнопки "Проверить подписку" ===
+@dp.callback_query(F.data == "check_subscription")
+async def check_sub_status(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+    await state.set_state(AdminStates.awaiting_check_subscription_id)
+    await callback.message.answer("🔍 Введите ID пользователя для проверки подписки:")
+    await callback.answer()
+
+# === Обработчик ID для проверки подписки ===
+@dp.message(AdminStates.awaiting_check_subscription_id)
+async def process_check_sub(message: Message, state: FSMContext):
+    await state.clear()
+    try:
+        user_id = int(message.text.strip())
+        cursor.execute("SELECT subscribed, subscription_expires FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            await message.answer("⚠️ Пользователь не найден.")
+            return
+        subscribed, expires = row
+        if subscribed:
+            await message.answer(f"✅ Подписка активна до {expires} для пользователя <code>{user_id}</code>", parse_mode="HTML")
+        else:
+            await message.answer(f"🔴 У пользователя <code>{user_id}</code> нет активной подписки", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
 # Состояние для FSM
 class AdminStates(StatesGroup):
     awaiting_broadcast_content = State()
@@ -521,6 +658,16 @@ def is_admin(user_id: int) -> bool:
     return str(user_id) == str(ADMIN_ID)
 
 @dp.message(Command("admin"))
+async def admin_panel(message: Message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        await message.answer("❌ Доступ запрещён")
+        return
+    await message.answer("🔧 Админ-панель:", reply_markup=admin_inline_keyboard())
+async def admin_panel(message: Message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        await message.answer("❌ Доступ запрещён")
+        return
+    await message.answer("🔧 Админ-панель:", reply_markup=admin_inline_keyboard())
 async def admin_panel(message: Message):
     user_id = message.from_user.id
     if not is_admin(user_id):
@@ -701,7 +848,11 @@ async def cancel_broadcast(message: Message, state: FSMContext):
 async def alias_admin_panel(message: Message):
     await admin_panel(message)
 
-@dp.message(Command("admin"))
+async def admin_panel(message: Message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        await message.answer("❌ Доступ запрещён")
+        return
+    await message.answer("🔧 Админ-панель:", reply_markup=admin_inline_keyboard())
 async def cmd_admin(message: Message):
     await admin_panel(message)
 
