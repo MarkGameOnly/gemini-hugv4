@@ -45,26 +45,26 @@ logging.basicConfig(
 # === Загрузка переменных окружения ===
 load_dotenv()
 
-# === Переменные окружения ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_API_KEY_IMAGE = os.getenv("OPENAI_API_KEY_IMAGE")
+
 print(f"✅ ADMIN_ID загружен: {ADMIN_ID}")
 
 from openai import AsyncOpenAI, APITimeoutError
 
-# === OpenAI клиенты ===
+# === OpenAI клиенты (единственные, без дублей) ===
 text_client = AsyncOpenAI(
     api_key=OPENAI_API_KEY,
-    http_client=httpx.AsyncClient(timeout=httpx.Timeout(30.0))  # увеличение таймаута
+    http_client=httpx.AsyncClient(timeout=httpx.Timeout(60.0))
 )
-openai_image = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
 
-# === OpenAI клиенты ===
-text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-image_client = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
+image_client = AsyncOpenAI(
+    api_key=OPENAI_API_KEY_IMAGE or OPENAI_API_KEY,
+    http_client=httpx.AsyncClient(timeout=httpx.Timeout(60.0))
+)
 
 # === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
@@ -823,7 +823,10 @@ async def handle_image_prompt(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ])
     await state.set_state(GenStates.await_image)
-    sent_msg = await message.answer("🖼 Введите промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
+    sent_msg = await message.answer(
+        "🖼 Введите промпт для изображения (или /cancel для отмены):", 
+        reply_markup=control_buttons
+    )
     timer_task = asyncio.create_task(update_timer(state, sent_msg, message, control_buttons))
     await state.update_data(timer_task=timer_task)
 
@@ -857,7 +860,10 @@ async def update_timer(state: FSMContext, sent_msg: types.Message, message: type
             if user_data.get("prompt_received"):
                 return
             try:
-                await sent_msg.edit_text(f"🖼 Введите промпт для изображения:\n\n{text}", reply_markup=control_buttons)
+                await sent_msg.edit_text(
+                    f"🖼 Введите промпт для изображения:\n\n{text}", 
+                    reply_markup=control_buttons
+                )
             except Exception as e:
                 logging.warning(f"Ошибка при обновлении таймера: {e}")
                 return
@@ -890,7 +896,7 @@ async def process_image_generation(message: Message, state: FSMContext):
     prompt = text
     user_id = message.from_user.id
 
-    if client is None:
+    if image_client is None:
         await message.answer("❌ Ошибка: AI-клиент не настроен.")
         await state.clear()
         return
@@ -900,24 +906,22 @@ async def process_image_generation(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    await message.answer("🧠 Генерирую изображение, подождите...")
-    await asyncio.sleep(1.5)
-    await message.answer("☺️ Осталось чуть-чуть...")
-    await asyncio.sleep(1.5)
-    await message.answer("🔥 Уже готовлю для вас супер-изображение")
-
+    await message.answer("🧠 Генерирую изображение, подождите... (OpenAI DALL·E)")
     try:
-        dalle = await openai_image.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024",
-            quality="hd",
-            response_format="url"
+        dalle = await asyncio.wait_for(
+            image_client.images.generate(
+                model="dall-e-3",
+                prompt=prompt,
+                size="1024x1024",
+                quality="hd",
+                response_format="url"
+            ),
+            timeout=60
         )
         image_url = dalle.data[0].url if dalle and dalle.data else None
 
         if not image_url:
-            await message.answer("⚠️ Не удалось получить изображение. Попробуйте позже.")
+            await message.answer("⚠️ Не удалось получить изображение от OpenAI. Попробуйте другой запрос или чуть позже.")
             await state.clear()
             return
 
@@ -927,28 +931,31 @@ async def process_image_generation(message: Message, state: FSMContext):
                     image_bytes = await resp.read()
                     await message.answer_photo(
                         types.BufferedInputFile(image_bytes, filename="image.png"),
-                        caption="🖼 Вот ваше изображение!",
+                        caption="🖼 Ваше изображение готово!",
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(text="🎨 Ещё одно изображение", callback_data="generate_another")],
                             [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
                         ])
                     )
-                    await message.answer("✅ Ваше изображение готово!")
                 else:
-                    await message.answer("❌ Не удалось загрузить изображение.")
+                    await message.answer("❌ Ошибка при скачивании изображения. OpenAI — бывает. Попробуйте ещё раз.")
                     await state.clear()
                     return
 
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
-            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
+            cursor.execute(
+                "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+                (user_id, "image", prompt)
+            )
             conn.commit()
 
-        await state.clear()
-
+    except asyncio.TimeoutError:
+        await message.answer("⏳ OpenAI слишком долго думал. Попробуйте повторить запрос — иногда даже ИИ засыпает.")
     except Exception as e:
-        logging.error(f"❌ Ошибка при генерации изображения: {e}")
-        await message.answer("⚠️ Произошла ошибка при генерации изображения. Попробуйте позже.")
+        logging.error(f"❌ Ошибка генерации изображения (OpenAI): {e}")
+        await message.answer(f"❌ OpenAI не справился: {e}\nПопробуйте ещё раз или поменяйте промпт.")
+    finally:
         await state.clear()
 
 
@@ -960,7 +967,10 @@ async def generate_another(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
     ])
-    sent_msg = await callback.message.answer("🖼 Введите новый промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
+    sent_msg = await callback.message.answer(
+        "🖼 Введите новый промпт для изображения (или /cancel для отмены):", 
+        reply_markup=control_buttons
+    )
     timer_task = asyncio.create_task(update_timer(state, sent_msg, callback.message, control_buttons))
     await state.update_data(timer_task=timer_task)
     await callback.answer()
