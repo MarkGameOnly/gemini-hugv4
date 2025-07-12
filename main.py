@@ -1,12 +1,13 @@
 # === Импорты стандартных библиотек ===
+# === Импорты стандартных библиотек ===
 import os
 import asyncio
 import random
 import logging
 import sqlite3
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Request, APIRouter, Response, Form
-from fastapi import Form
+from fastapi import FastAPI, Request, APIRouter, Response, Form, UploadFile, File
+import base64
 from fastapi.responses import JSONResponse, HTMLResponse
 from contextlib import asynccontextmanager
 import json
@@ -88,6 +89,7 @@ def init_db():
         )
     conn.commit()
 init_db()
+
 
 # === Middleware EnsureUser ===
 class EnsureUserMiddleware(BaseMiddleware):
@@ -184,6 +186,13 @@ def append_json(path, record):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def save_image_record(prompt, url):
+    append_json(images_path, {
+        "prompt": prompt,
+        "url": url,
+        "created_at": datetime.now().isoformat()
+    })
+
 def log_user_action(user_id, action, details):
     append_json(logs_path, {
         "user_id": user_id,
@@ -199,6 +208,7 @@ def save_payment(user_id, invoice_id, amount):
         "amount": amount,
         "timestamp": datetime.now().isoformat()
     })
+
 # === Webhook CryptoBot ===
 crypto_router = APIRouter()
 @crypto_router.post("/cryptobot", response_class=JSONResponse)
@@ -277,12 +287,10 @@ async def check_subscription_reminders():
         try:
             print("🔔 Проверка напоминаний о подписках...")
             tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-
             cursor.execute("""
                 SELECT user_id FROM users
                 WHERE subscribed = 1 AND subscription_expires = ?
             """, (tomorrow,))
-
             users = cursor.fetchall()
             for user_id_tuple in users:
                 user_id = user_id_tuple[0]
@@ -295,11 +303,10 @@ async def check_subscription_reminders():
                     print(f"📨 Напоминание отправлено пользователю {user_id}")
                 except Exception as e:
                     logging.warning(f"❌ Не удалось отправить сообщение {user_id}: {e}")
-
         except Exception as e:
             logging.error(f"❌ Ошибка при проверке подписок: {e}", exc_info=True)
-
         await asyncio.sleep(3600)  # Проверка раз в час
+
 
 # === Состояния ===
 class GenStates(StatesGroup):
@@ -345,6 +352,7 @@ def gemini_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]]
     )
 
+
 # === Обработчик выхода из Gemini ===
 
 @dp.callback_query(F.data == "back_to_menu")
@@ -368,7 +376,7 @@ async def open_site(message: types.Message):
         "Перейди по ссылке, чтобы воспользоваться генерацией через сайт ITMarket:",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[
-                InlineKeyboardButton(text="🌐 Перейти на сайт", url="https://itm-code.ru/page3")
+                InlineKeyboardButton(text="🌐 Перейти на сайт", url="https://itm-code.ru/geminiapp")
             ]]
         )
     )
@@ -433,6 +441,41 @@ async def cmd_profile(message: Message):
         if len(output) > 4000:
             output = output[:3990] + "\n... (обрезано)"
         await message.answer(output)
+
+# === Telegram-бот: анализ фото === 
+
+@dp.message(F.photo)
+async def handle_photo(message: types.Message, state: FSMContext):
+    # Берём самое большое фото
+    photo = message.photo[-1]
+    file_info = await bot.get_file(photo.file_id)
+    file = await bot.download_file(file_info.file_path)
+    image_bytes = file.read()
+
+    prompt = "Что изображено на этом фото?"  # Можно сделать настраиваемым через диалог
+    await message.answer("🔎 Анализирую изображение…")
+    try:
+        b64_image = base64.b64encode(image_bytes).decode()
+        data_url = f"data:image/png;base64,{b64_image}"
+        vision_response = await image_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]
+            }],
+            max_tokens=500
+        )
+        answer = vision_response.choices[0].message.content.strip()
+        await message.answer(answer)
+        # Опционально: сохранять в историю
+        user_id = message.from_user.id
+        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "vision", prompt))
+        conn.commit()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка анализа изображения: {e}")
 
 
 # === Админка ===
@@ -770,20 +813,20 @@ async def process_image_generation(message: Message, state: FSMContext):
     prompt = text
     user_id = message.from_user.id
 
-    if image_client is None:
-        await message.answer("❌ Ошибка: AI-клиент не настроен.")
+    if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
+        await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
         await state.clear()
         return
 
-    if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
-        await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
+    if image_client is None:
+        await message.answer("❌ Ошибка: AI-клиент не настроен.")
         await state.clear()
         return
 
     await message.answer("🧠 Генерирую изображение, подождите...")
     await asyncio.sleep(1.5)
     await message.answer("☺️ Осталось чуть-чуть...")
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(1.2)
     await message.answer("🔥 Уже готовлю для вас супер-изображение")
 
     try:
@@ -814,11 +857,14 @@ async def process_image_generation(message: Message, state: FSMContext):
                         ])
                     )
                     await message.answer("✅ Ваше изображение готово!")
+                    # Сохраняем в галерею сайта
+                    save_image_record(prompt, image_url)
                 else:
                     await message.answer("❌ Не удалось загрузить изображение.")
                     await state.clear()
                     return
 
+        # Обновляем лимиты и историю (только не для админа)
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
             cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
@@ -830,6 +876,7 @@ async def process_image_generation(message: Message, state: FSMContext):
         logging.error(f"❌ Ошибка при генерации изображения: {e}")
         await message.answer("⚠️ Произошла ошибка при генерации изображения. Попробуйте позже.")
         await state.clear()
+
 
 # === 🌌 Gemini AI — Умный диалог ===
 
@@ -1012,6 +1059,7 @@ async def generate_image(prompt: str = Form(...)):
         image_url = dalle.data[0].url if dalle and dalle.data else None
         if not image_url:
             return HTMLResponse(content="<b>❌ Не удалось получить изображение.</b>", status_code=500)
+        save_image_record(prompt, image_url)
         return HTMLResponse(content=f"""
             <div style='text-align:center'>
                 <img src="{image_url}" style="max-width:320px;border-radius:12px;box-shadow:0 4px 18px #673ab722;">
@@ -1020,3 +1068,46 @@ async def generate_image(prompt: str = Form(...)):
         """)
     except Exception as e:
         return HTMLResponse(content=f"<b>❌ Ошибка: {e}</b>", status_code=500)
+
+# === Endpoint для сайта /analyze-image ===
+@app.post("/analyze-image")
+async def analyze_image(prompt: str = Form(...), file: UploadFile = File(...)):
+    try:
+        image_bytes = await file.read()
+        b64_image = base64.b64encode(image_bytes).decode()
+        data_url = f"data:image/png;base64,{b64_image}"
+        vision_response = await image_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]
+            }],
+            max_tokens=500
+        )
+        answer = vision_response.choices[0].message.content.strip()
+        return HTMLResponse(content=f"""
+            <div style="padding:16px">
+                <b>Ваш вопрос:</b> {prompt}<br>
+                <b>Ответ:</b> {answer}
+            </div>
+        """)
+    except Exception as e:
+        return HTMLResponse(content=f"<b>❌ Ошибка: {e}</b>", status_code=500)
+
+# === Endpoint для сайта /gallery (коллаж) ===
+@app.get("/gallery")
+async def gallery():
+    try:
+        with open(images_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        img_tags = ""
+        for entry in reversed(data[-9:]):
+            url = entry.get("url")
+            if url:
+                img_tags += f'<img src="{url}" alt="AI Image" />\n'
+        return HTMLResponse(img_tags)
+    except Exception as e:
+        return HTMLResponse(f"<b>Ошибка загрузки галереи: {e}</b>", status_code=500)
