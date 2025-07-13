@@ -56,7 +56,7 @@ OPENAI_API_KEY_IMAGE = os.getenv("OPENAI_API_KEY_IMAGE")
 # === OpenAI клиенты ===
 text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 image_client = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
-
+custom_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 # === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -281,6 +281,24 @@ app.include_router(crypto_router)  # CryptoBot Webhook
 async def root():
     return {"status": "ok"}
 
+# === Сайты ==== 
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://itm-code.ru",
+        "https://itm-code.ru/geminiapp",
+        "https://www.itm-code.ru",
+        "http://localhost:3000",
+        "http://localhost"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # === Фоновая задача — напоминания о подписках ===
 async def check_subscription_reminders():
     while True:
@@ -441,41 +459,6 @@ async def cmd_profile(message: Message):
         if len(output) > 4000:
             output = output[:3990] + "\n... (обрезано)"
         await message.answer(output)
-
-# === Telegram-бот: анализ фото === 
-
-@dp.message(F.photo)
-async def handle_photo(message: types.Message, state: FSMContext):
-    # Берём самое большое фото
-    photo = message.photo[-1]
-    file_info = await bot.get_file(photo.file_id)
-    file = await bot.download_file(file_info.file_path)
-    image_bytes = file.read()
-
-    prompt = "Что изображено на этом фото?"  # Можно сделать настраиваемым через диалог
-    await message.answer("🔎 Анализирую изображение…")
-    try:
-        b64_image = base64.b64encode(image_bytes).decode()
-        data_url = f"data:image/png;base64,{b64_image}"
-        vision_response = await image_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}}
-                ]
-            }],
-            max_tokens=500
-        )
-        answer = vision_response.choices[0].message.content.strip()
-        await message.answer(answer)
-        # Опционально: сохранять в историю
-        user_id = message.from_user.id
-        cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "vision", prompt))
-        conn.commit()
-    except Exception as e:
-        await message.answer(f"❌ Ошибка анализа изображения: {e}")
 
 
 # === Админка ===
@@ -783,6 +766,22 @@ async def cancel_generation(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
 
+# === Создать изображение === 
+
+@dp.message(Command("custom_prompt"))
+async def handle_custom_prompt(message: Message):
+    prompt_id = "pmpt_687366b634808195987729f282ab4e67014c0ef6ad1a09e8"
+    version = "6"
+    try:
+        response = await custom_client.responses.create(
+            prompt={
+                "id": prompt_id,
+                "version": version
+            }
+        )
+        await message.answer(f"Ответ Playground Prompt v6:\n\n{response.data[0].text}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка вызова Playground prompt: {e}")
 
 @dp.message(F.text.in_(["🎨Создать изображение"]))
 async def handle_image_prompt(message: Message, state: FSMContext):
@@ -1067,15 +1066,41 @@ async def generate_image(prompt: str = Form(...)):
             </div>
         """)
     except Exception as e:
+        logging.exception("Ошибка в /generate-image:")
         return HTMLResponse(content=f"<b>❌ Ошибка: {e}</b>", status_code=500)
 
 # === Endpoint для сайта /analyze-image ===
+
+MAX_IMAGE_SIZE_MB = 10  # Максимальный размер файла (например, 10 МБ)
+MAX_PROMPT_LEN = 400    # Максимальная длина текста запроса
+
 @app.post("/analyze-image")
-async def analyze_image(prompt: str = Form(...), file: UploadFile = File(...)):
+async def analyze_image(
+    prompt: str = Form(...), 
+    file: UploadFile = File(...)
+):
     try:
+        # Проверка длины prompt
+        if len(prompt.strip()) < 2:
+            return HTMLResponse(
+                "<b>❌ Введите более развёрнутый вопрос.</b>", status_code=400
+            )
+        if len(prompt) > MAX_PROMPT_LEN:
+            return HTMLResponse(
+                f"<b>❌ Слишком длинный запрос (максимум {MAX_PROMPT_LEN} символов).</b>", status_code=400
+            )
+
         image_bytes = await file.read()
+        if len(image_bytes) > MAX_IMAGE_SIZE_MB * 1024 * 1024:
+            return HTMLResponse(
+                f"<b>❌ Файл слишком большой (максимум {MAX_IMAGE_SIZE_MB} МБ).</b>", status_code=400
+            )
+
+        # Кодируем картинку для передачи в Vision
         b64_image = base64.b64encode(image_bytes).decode()
         data_url = f"data:image/png;base64,{b64_image}"
+
+        # Запрос к OpenAI Vision (gpt-4o)
         vision_response = await image_client.chat.completions.create(
             model="gpt-4o",
             messages=[{
@@ -1087,6 +1112,7 @@ async def analyze_image(prompt: str = Form(...), file: UploadFile = File(...)):
             }],
             max_tokens=500
         )
+
         answer = vision_response.choices[0].message.content.strip()
         return HTMLResponse(content=f"""
             <div style="padding:16px">
@@ -1095,7 +1121,10 @@ async def analyze_image(prompt: str = Form(...), file: UploadFile = File(...)):
             </div>
         """)
     except Exception as e:
-        return HTMLResponse(content=f"<b>❌ Ошибка: {e}</b>", status_code=500)
+        logging.exception("Ошибка в /analyze-image:")
+        return HTMLResponse(
+            f"<b>❌ Ошибка: {e}</b>", status_code=500
+        )
 
 # === Endpoint для сайта /gallery (коллаж) ===
 @app.get("/gallery")
