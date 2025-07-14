@@ -1,5 +1,4 @@
 # === Импорты стандартных библиотек ===
-# === Импорты стандартных библиотек ===
 import os
 import asyncio
 import random
@@ -57,6 +56,7 @@ OPENAI_API_KEY_IMAGE = os.getenv("OPENAI_API_KEY_IMAGE")
 text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 image_client = AsyncOpenAI(api_key=OPENAI_API_KEY_IMAGE)
 custom_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
 # === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -112,6 +112,7 @@ storage = MemoryStorage()
 dp = Dispatcher(bot=bot, storage=storage)
 dp.message.middleware(EnsureUserMiddleware())
 dp.callback_query.middleware(EnsureUserMiddleware())
+
 
 
 # === Вспомогательные функции ===
@@ -341,7 +342,7 @@ class StateAssistant(StatesGroup):
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✍️ Цитаты дня"), KeyboardButton(text="🎨Создать изображение")],
+            [KeyboardButton(text="✍️ Цитаты дня"), KeyboardButton(text="🎨Создать изображение Playground")],
             [KeyboardButton(text="🌌 Gemini AI"), KeyboardButton(text="🌠 Gemini Примеры")],
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🌐 Генерация на сайте")],
             [KeyboardButton(text="📚 Как пользоваться?"), KeyboardButton(text="📎 Остальные проекты")]
@@ -768,114 +769,37 @@ async def cancel_generation(message: Message, state: FSMContext):
 
 # === Создать изображение === 
 
-@dp.message(Command("custom_prompt"))
-async def handle_custom_prompt(message: Message):
-    prompt_id = "pmpt_687366b634808195987729f282ab4e67014c0ef6ad1a09e8"
-    version = "6"
+# === Только Playground генерация изображения ===
+@dp.message(F.text.in_(["🎨Создать изображение Playground"]))
+@dp.message(Command("custom_image_prompt"))
+async def handle_custom_image_prompt(message: Message, state: FSMContext):
+    await state.set_state("await_custom_playground_prompt")
+    await message.answer(
+        "✍️ Введите промпт (описание), и Playground Prompt сгенерирует для вас изображение:"
+    )
+
+@dp.message(F.state == "await_custom_playground_prompt")
+async def process_custom_image_prompt(message: Message, state: FSMContext):
+    user_prompt = message.text.strip()
+    prompt_id = "pmpt_687489412fac8197860d94007857d3e80336f919e088c903"
+    version = "3"
     try:
         response = await custom_client.responses.create(
             prompt={
                 "id": prompt_id,
                 "version": version
+                # "user_prompt": user_prompt
             }
         )
-        await message.answer(f"Ответ Playground Prompt v6:\n\n{response.data[0].text}")
+        content = response.data[0].text
+        if content.startswith("http"):
+            await message.answer_photo(content, caption="🖼 Ваше изображение от Playground Prompt!")
+        else:
+            await message.answer(f"Результат Playground Prompt v1:\n\n{content}")
     except Exception as e:
-        await message.answer(f"❌ Ошибка вызова Playground prompt: {e}")
-
-@dp.message(F.text.in_(["🎨Создать изображение"]))
-async def handle_image_prompt(message: Message, state: FSMContext):
-    await state.clear()
-    control_buttons = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-    ])
-    await state.set_state(GenStates.await_image)
-    sent_msg = await message.answer("🖼 Введите промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
-    timer_task = asyncio.create_task(update_timer(state, sent_msg, message, control_buttons))
-    await state.update_data(timer_task=timer_task)
-
-@dp.message(F.state == GenStates.await_image)
-async def process_image_generation(message: Message, state: FSMContext):
-    text = message.text.strip()
-    if not text or len(text) < 3:
-        await message.answer("❌ Промпт должен быть не короче 3 символов.")
-        return
-
-    await state.update_data(prompt_received=True)
-
-    data = await state.get_data()
-    timer_task = data.get("timer_task")
-    if timer_task:
-        timer_task.cancel()
-
-    prompt = text
-    user_id = message.from_user.id
-
-    if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
-        await message.answer("🔐 Лимит исчерпан. Купите подписку для продолжения.")
+        await message.answer(f"❌ Ошибка Playground prompt: {e}")
+    finally:
         await state.clear()
-        return
-
-    if image_client is None:
-        await message.answer("❌ Ошибка: AI-клиент не настроен.")
-        await state.clear()
-        return
-
-    await message.answer("🧠 Генерирую изображение, подождите...")
-    await asyncio.sleep(1.5)
-    await message.answer("☺️ Осталось чуть-чуть...")
-    await asyncio.sleep(1.2)
-    await message.answer("🔥 Уже готовлю для вас супер-изображение")
-
-    try:
-        dalle = await image_client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024",
-            quality="hd",
-            response_format="url"
-        )
-        image_url = dalle.data[0].url if dalle and dalle.data else None
-
-        if not image_url:
-            await message.answer("⚠️ Не удалось получить изображение. Попробуйте позже.")
-            await state.clear()
-            return
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(image_url) as resp:
-                if resp.status == 200:
-                    image_bytes = await resp.read()
-                    await message.answer_photo(
-                        types.BufferedInputFile(image_bytes, filename="image.png"),
-                        caption="🖼 Вот ваше изображение!",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="🎨 Ещё одно изображение", callback_data="generate_another")],
-                            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-                        ])
-                    )
-                    await message.answer("✅ Ваше изображение готово!")
-                    # Сохраняем в галерею сайта
-                    save_image_record(prompt, image_url)
-                else:
-                    await message.answer("❌ Не удалось загрузить изображение.")
-                    await state.clear()
-                    return
-
-        # Обновляем лимиты и историю (только не для админа)
-        if str(user_id) != str(ADMIN_ID):
-            increment_usage(user_id)
-            cursor.execute("INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)", (user_id, "image", prompt))
-            conn.commit()
-
-        await state.clear()
-
-    except Exception as e:
-        logging.error(f"❌ Ошибка при генерации изображения: {e}")
-        await message.answer("⚠️ Произошла ошибка при генерации изображения. Попробуйте позже.")
-        await state.clear()
-
 
 # === 🌌 Gemini AI — Умный диалог ===
 
