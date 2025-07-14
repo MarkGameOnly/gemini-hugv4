@@ -390,10 +390,13 @@ async def stop_command(message: Message, state: FSMContext):
 @dp.message(F.text == "🌐 Генерация на сайте")
 async def open_site(message: types.Message):
     await message.answer(
-        "Перейди по ссылке, чтобы воспользоваться генерацией через сайт ITMarket:",
+        "Открой наш AI генератор прямо в Telegram! Нажми на кнопку ниже и запускай Mini App:",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[
-                InlineKeyboardButton(text="🌐 Перейти на сайт", url="https://t.me/GeminiITMWeb_bot")
+                InlineKeyboardButton(
+                    text="✨ Открыть AI Mini App",
+                    url="https://t.me/GeminiITMWeb_bot/myapp"
+                )
             ]]
         )
     )
