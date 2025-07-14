@@ -393,7 +393,7 @@ async def open_site(message: types.Message):
         "Перейди по ссылке, чтобы воспользоваться генерацией через сайт ITMarket:",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[
-                InlineKeyboardButton(text="🌐 Перейти на сайт", url="https://itm-code.ru/geminiapp")
+                InlineKeyboardButton(text="🌐 Перейти на сайт", url="https://t.me/GeminiITMWeb_bot")
             ]]
         )
     )
