@@ -52,10 +52,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-custom_client = os.getenv("custom_client")
-
 text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-custom_client = AsyncOpenAI(api_key=custom_client)
+image_client = AsyncOpenAI(api_key=OPENAI_API_KEY)  # Использовать один и тот же ключ!
 
 # === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
@@ -342,7 +340,7 @@ class StateAssistant(StatesGroup):
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✍️ Цитаты дня"), KeyboardButton(text="🎨Создать изображение Playground")],
+            [KeyboardButton(text="✍️ Цитаты дня")],
             [KeyboardButton(text="🌌 Gemini AI"), KeyboardButton(text="🌠 Gemini Примеры")],
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🌐 Генерация на сайте")],
             [KeyboardButton(text="📚 Как пользоваться?"), KeyboardButton(text="📎 Остальные проекты")]
@@ -694,101 +692,6 @@ async def buy_subscription(message: Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка создания подписки: {e}")
         
-# === Создать изображение ===
-
-@dp.message(F.text.in_(["🎨Создать изображение Playground"]))
-@dp.message(Command("custom_image_prompt"))
-async def handle_custom_image_prompt(message: Message, state: FSMContext):
-    await state.set_state("await_custom_playground_prompt")
-    await message.answer(
-        "✍️ Введите промпт (описание), и Playground Prompt (GPT-4o + DALL·E) сгенерирует для вас изображение:"
-    )
-
-@dp.message(F.state == "await_custom_playground_prompt")
-async def process_custom_image_prompt(message: Message, state: FSMContext):
-    user_prompt = message.text.strip()
-    logging.info(f"Пришёл промпт: {user_prompt}")
-    await message.answer("Пробую отправить в OpenAI...")
-
-    try:
-        await message.answer("🎨 Создаю изображение... подождите.")
-        await asyncio.sleep(1.2)
-        await message.answer("Жду ответ от OpenAI, пожалуйста, подождите...")
-
-        response = await custom_client.responses.create(
-            model="gpt-4o",
-            input=[
-                {
-                    "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "... (см. твой промпт выше)"
-                        }
-                    ]
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": user_prompt
-                        }
-                    ]
-                }
-            ],
-            text={
-                "format": {
-                    "type": "text"
-                }
-            },
-            reasoning={},
-            tools=[
-                {
-                    "type": "image_generation",
-                    "size": "1024x1024",
-                    "quality": "high",
-                    "output_format": "png",
-                    "background": "auto",
-                    "moderation": "auto",
-                    "partial_images": 3
-                }
-            ],
-            temperature=1,
-            max_output_tokens=2048,
-            top_p=1,
-            store=True
-        )
-
-        # Выводим весь ответ для диагностики
-        await message.answer(f"Ответ от OpenAI:\n{response}")
-
-        # Парсинг ответа
-        output_text = ""
-        image_url = None
-        data = response.data[0] if response and hasattr(response, "data") and response.data else None
-
-        if data:
-            output_text = getattr(data, "text", None) or data.get("text", "")
-            image_url = getattr(data, "url", None) or data.get("url", "")
-        else:
-            output_text = "✅ Изображение создано (описание не получено)."
-
-        await message.answer(output_text if output_text else "✅ Ваше изображение создано!")
-        if image_url:
-            await message.answer_photo(image_url, caption="🖼 Ваше изображение от Playground Prompt!")
-        else:
-            await message.answer("Извините, не удалось получить ссылку на изображение. Попробуйте другой запрос.")
-
-        await message.answer("✅ Ваше изображение создано!")
-
-    except Exception as e:
-        logging.error(f"OpenAI Playground error: {repr(e)}", exc_info=True)
-        await message.answer(f"❌ Ошибка Playground prompt: {e}")
-    finally:
-        await state.clear()
-
-
 # === ✍️ Цитаты дня ===
 
 @dp.message(F.text.in_(['✍️ Цитаты дня']))
