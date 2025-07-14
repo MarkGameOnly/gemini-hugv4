@@ -780,10 +780,17 @@ async def handle_custom_image_prompt(message: Message, state: FSMContext):
 @dp.message(F.state == "await_custom_playground_prompt")
 async def process_custom_image_prompt(message: Message, state: FSMContext):
     user_prompt = message.text.strip()
-    await message.answer("🎨 Создаю изображение... подождите.")
-    await asyncio.sleep(1.2)
+    # 1. Логируем промпт в файл и чат
+    logging.info(f"Пришёл промпт: {user_prompt}")
+    await message.answer("Пробую отправить в OpenAI...")
 
     try:
+        await message.answer("🎨 Создаю изображение... подождите.")
+        await asyncio.sleep(1.2)
+
+        # 2. Отправляем в OpenAI
+        await message.answer("Жду ответ от OpenAI, пожалуйста, подождите...")
+
         response = await custom_client.responses.create(
             model="gpt-4o",
             input=[
@@ -849,7 +856,10 @@ async def process_custom_image_prompt(message: Message, state: FSMContext):
             store=True
         )
 
-        # Парсим ответ
+        # 3. Выводим весь ответ для отладки (это временно)
+        await message.answer(f"Ответ от OpenAI:\n{response}")
+
+        # 4. Дальнейший парсинг (оставь по своей логике или просто для отладки)
         output_text = ""
         image_url = None
         data = response.data[0] if response and hasattr(response, "data") and response.data else None
@@ -869,9 +879,11 @@ async def process_custom_image_prompt(message: Message, state: FSMContext):
         await message.answer("✅ Ваше изображение создано!")
 
     except Exception as e:
+        logging.error(f"OpenAI Playground error: {repr(e)}", exc_info=True)
         await message.answer(f"❌ Ошибка Playground prompt: {e}")
     finally:
         await state.clear()
+
 
 
 # === 🌌 Gemini AI — Умный диалог ===
