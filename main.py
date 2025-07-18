@@ -342,11 +342,75 @@ def main_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="✍️ Цитаты дня")],
             [KeyboardButton(text="🌌 Gemini AI"), KeyboardButton(text="🌠 Gemini Примеры")],
+            [KeyboardButton(text="🎨 Создать изображение")], 
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🌐 Генерация на сайте")],
             [KeyboardButton(text="📚 Как пользоваться?"), KeyboardButton(text="📎 Остальные проекты")]
         ],
         resize_keyboard=True
     )
+# === Создать изображения в боте === 
+
+@dp.message(F.text.in_(["🎨 Создать изображение"]))
+async def handle_image_prompt(message: Message, state: FSMContext):
+    await state.clear()
+    control_buttons = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_generation")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+    ])
+    await state.set_state(GenStates.await_image)
+    await message.answer("🖼 Введите промпт для изображения (или /cancel для отмены):", reply_markup=control_buttons)
+
+@dp.message(GenStates.await_image)
+async def generate_dalle_image(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    prompt = message.text.strip()
+    ensure_user(user_id)
+
+    if not prompt or len(prompt) < 3:
+        await message.answer("❌ Введите осмысленный запрос для генерации.")
+        return
+
+    if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
+        await message.answer("🔐 Лимит исчерпан. Купите подписку 💰")
+        return
+
+    await message.answer("🎨 Генерирую изображение...")
+
+    try:
+        dalle = await image_client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            quality="hd",
+            response_format="url"
+        )
+        image_url = dalle.data[0].url if dalle and dalle.data else None
+
+        if not image_url:
+            await message.answer("❌ Не удалось получить изображение.")
+            return
+
+        # скачивание и отправка изображения пользователю:
+        img_bytes = await download_image(image_url)
+        await message.answer_photo(photo=img_bytes, caption=f"🖼 Ваш запрос: {prompt}")
+
+        save_image_record(prompt, image_url)
+
+        # логирование истории
+        if str(user_id) != str(ADMIN_ID):
+            increment_usage(user_id)
+            cursor.execute(
+                "INSERT INTO history (user_id, type, prompt) VALUES (?, ?, ?)",
+                (user_id, "image", prompt)
+            )
+            conn.commit()
+
+    except Exception as e:
+        logging.exception("Ошибка генерации изображения:")
+        await message.answer(f"❌ Ошибка при генерации: {e}")
+    finally:
+        await state.clear()
+
 
 # === Таймаут для скачивания изображений ===
 aiohttp_timeout = aiohttp.ClientTimeout(total=60)
