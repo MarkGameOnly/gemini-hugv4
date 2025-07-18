@@ -390,13 +390,11 @@ async def generate_dalle_image(message: Message, state: FSMContext):
             await message.answer("❌ Не удалось получить изображение.")
             return
 
-        # скачивание и отправка изображения пользователю:
-        img_bytes = await download_image(image_url)
-        await message.answer_photo(photo=img_bytes, caption=f"🖼 Ваш запрос: {prompt}")
-
+        # Отправляем как ссылку — быстро и поддерживается Telegram
+        await message.answer_photo(image_url, caption=f"🖼 Ваш запрос: {prompt}")
         save_image_record(prompt, image_url)
 
-        # логирование истории
+        # Сохраняем использование и историю только для не-админа
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
             cursor.execute(
@@ -412,8 +410,9 @@ async def generate_dalle_image(message: Message, state: FSMContext):
         await state.clear()
 
 
+
 # === Таймаут для скачивания изображений ===
-aiohttp_timeout = aiohttp.ClientTimeout(total=60)
+aiohttp_timeout = aiohttp.ClientTimeout(total=180)
 
 # === Функция скачивания изображения ===
 async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes:
