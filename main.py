@@ -31,6 +31,7 @@ from aiogram.utils.markdown import hbold
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from openai import AsyncOpenAI
 from crypto import create_invoice, check_invoice
+from openai import APITimeoutError
 
 # === Настройка логирования ===
 logging.basicConfig(
@@ -390,11 +391,9 @@ async def generate_dalle_image(message: Message, state: FSMContext):
             await message.answer("❌ Не удалось получить изображение.")
             return
 
-        # Отправляем как ссылку — быстро и поддерживается Telegram
         await message.answer_photo(image_url, caption=f"🖼 Ваш запрос: {prompt}")
         save_image_record(prompt, image_url)
 
-        # Сохраняем использование и историю только для не-админа
         if str(user_id) != str(ADMIN_ID):
             increment_usage(user_id)
             cursor.execute(
@@ -402,12 +401,13 @@ async def generate_dalle_image(message: Message, state: FSMContext):
                 (user_id, "image", prompt)
             )
             conn.commit()
-
+    except APITimeoutError:
+        await message.answer("⏳ OpenAI долго думает или перегружен. Попробуйте снова через минуту!")
     except Exception as e:
-        logging.exception("Ошибка генерации изображения:")
         await message.answer(f"❌ Ошибка при генерации: {e}")
     finally:
         await state.clear()
+
 
 
 
