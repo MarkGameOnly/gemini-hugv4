@@ -499,24 +499,6 @@ def gemini_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]]
     )
 
-# === Callback обработчик кнопки Криптобота === 
-
-@dp.callback_query(lambda c: c.data.startswith("activate_user_"))
-async def activate_user_callback(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("❌ Только для администратора!", show_alert=True)
-        return
-
-    try:
-        user_id = int(callback.data.replace("activate_user_", ""))
-        activate_subscription(user_id)
-        await callback.message.edit_reply_markup()  # убираем кнопку
-        await callback.message.answer(f"✅ Подписка активирована для <code>{user_id}</code>!", parse_mode="HTML")
-        await bot.send_message(user_id, "🎉 Ваша подписка активирована администратором! Спасибо за оплату.")
-        logging.info(f"[ADMIN] Подписка вручную открыта для {user_id} (через inline)")
-        await callback.answer("Готово! Подписка активирована.")
-    except Exception as e:
-        await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
 
 
 # === Обработчик выхода из Gemini ===
@@ -667,8 +649,9 @@ def admin_inline_keyboard():
         [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")],
         [InlineKeyboardButton(text="📄 Admin лог", callback_data="view_admin_log")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="start_broadcast")],
-        [InlineKeyboardButton(text="📬 Отправить пост", callback_data="start_broadcast")]
+        [InlineKeyboardButton(text="📋 Список пользователей", callback_data="user_list")],  # <-- NEW
     ])
+
 def broadcast_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Всем пользователям", callback_data="broadcast_all")],
@@ -699,6 +682,38 @@ async def send_log_file(message: Message, filename: str):
     except Exception as e:
         logging.exception(f"Ошибка при отправке {filename}")
         await message.answer(f"❌ Ошибка при чтении {filename}: {e}")
+
+@dp.callback_query(F.data == "user_list")
+async def admin_show_user_list(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.message.answer("❌ Доступ запрещён")
+        return
+
+    # Список последних 10 пользователей без подписки (или всех — можно изменить)
+    cursor.execute("SELECT user_id, usage_count, subscribed, subscription_expires FROM users ORDER BY joined_at DESC LIMIT 10")
+    users = cursor.fetchall()
+
+    if not users:
+        await callback.message.answer("Пользователей не найдено.")
+        await callback.answer()
+        return
+
+    for user_id, usage_count, subscribed, expires in users:
+        sub_status = "🟢 Активна" if subscribed else "🔴 Нет подписки"
+        text = f"👤 <b>ID:</b> <code>{user_id}</code>\n" \
+               f"Запросов: <b>{usage_count}</b>\n" \
+               f"Подписка: {sub_status}"
+        if subscribed and expires:
+            text += f"\nДо: <b>{expires}</b>"
+        keyboard = None
+        if not subscribed:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]
+                ]
+            )
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
 
 # === Команды логов ===
 @dp.message(Command("logs"))
@@ -814,6 +829,25 @@ async def alias_admin_panel(message: Message):
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
     await admin_panel(message)
+
+# === Callback обработчик кнопки Криптобота === 
+
+@dp.callback_query(lambda c: c.data.startswith("activate_user_"))
+async def activate_user_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Только для администратора!", show_alert=True)
+        return
+
+    try:
+        user_id = int(callback.data.replace("activate_user_", ""))
+        activate_subscription(user_id)
+        await callback.message.edit_reply_markup()  # убираем кнопку
+        await callback.message.answer(f"✅ Подписка активирована для <code>{user_id}</code>!", parse_mode="HTML")
+        await bot.send_message(user_id, "🎉 Ваша подписка активирована администратором! Спасибо за оплату.")
+        logging.info(f"[ADMIN] Подписка вручную открыта для {user_id} (через inline)")
+        await callback.answer("Готово! Подписка активирована.")
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
 
 # === Остальные проекты ===
 @dp.message(F.text.in_(["📎 Остальные проекты"]))
