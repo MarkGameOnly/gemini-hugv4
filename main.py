@@ -755,7 +755,9 @@ async def admin_show_user_list(callback: types.CallbackQuery, state: FSMContext)
         keyboard = None
         if not subscribed:
             keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton("✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]]
+                inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]
+                ]
             )
         # лимит 0.07 чтобы Telegram не ругался (можно уменьшить до 0.03)
         m = await callback.message.answer(user_text, parse_mode="HTML", reply_markup=keyboard)
