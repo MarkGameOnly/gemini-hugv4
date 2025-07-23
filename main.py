@@ -31,9 +31,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.utils.markdown import hbold
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from openai import AsyncOpenAI
-from crypto import create_invoice, check_invoice
-from openai import APITimeoutError
 from crypto import create_invoice
+from openai import APITimeoutError
 import shutil
 # === Настройка логирования ===
 logging.basicConfig(
@@ -288,7 +287,7 @@ if not reminder_task_started:
     asyncio.create_task(check_subscription_reminders())
     asyncio.create_task(weekly_backup())  # запуск бэкапа
     reminder_task_started = True
-    
+
 # === Сайты ==== 
 
 from fastapi.middleware.cors import CORSMiddleware
