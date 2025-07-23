@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 
+
 # === Импорты сторонних библиотек ===
 from dotenv import load_dotenv
 import aiohttp
@@ -32,7 +33,8 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from openai import AsyncOpenAI
 from crypto import create_invoice, check_invoice
 from openai import APITimeoutError
-
+from crypto import create_invoice
+import shutil
 # === Настройка логирования ===
 logging.basicConfig(
     level=logging.INFO,
@@ -112,6 +114,22 @@ dp = Dispatcher(bot=bot, storage=storage)
 dp.message.middleware(EnsureUserMiddleware())
 dp.callback_query.middleware(EnsureUserMiddleware())
 
+async def weekly_backup():
+    while True:
+        try:
+            now = datetime.now()
+            if now.weekday() == 0 and now.hour == 3:  # Понедельник, 03:00
+                backup_dir = data_dir / "backups"
+                backup_dir.mkdir(exist_ok=True)
+                users_backup = backup_dir / f"users_{now.strftime('%Y%m%d_%H%M')}.db"
+                payments_backup = backup_dir / f"payments_{now.strftime('%Y%m%d_%H%M')}.json"
+                shutil.copy("users.db", users_backup)
+                shutil.copy(payments_path, payments_backup)
+                logging.info(f"📦 Резервные копии созданы: {users_backup}, {payments_backup}")
+                await asyncio.sleep(3600)  # чтобы не делать backup несколько раз за утро
+            await asyncio.sleep(1800)  # Проверка дважды в час
+        except Exception as e:
+            logging.error(f"❌ Ошибка при резервном копировании: {e}", exc_info=True)
 
 
 # === Вспомогательные функции ===
@@ -209,21 +227,6 @@ def save_payment(user_id, invoice_id, amount):
         "timestamp": datetime.now().isoformat()
     })
 
-# === Webhook CryptoBot ===
-crypto_router = APIRouter()
-@crypto_router.post("/cryptobot", response_class=JSONResponse)
-async def cryptobot_webhook(request: Request):
-    try:
-        data = await request.json()
-        logging.info(f"🔔 Webhook от CryptoBot: {data}")
-        if data.get("status") == "paid":
-            user_id = int(data.get("payload"))
-            logging.info(f"✅ Платёж подтверждён. Активация подписки для {user_id}")
-            activate_subscription(user_id)
-    except Exception as e:
-        logging.error(f"❌ Ошибка Webhook CryptoBot: {e}", exc_info=True)
-    return JSONResponse(content={"status": "ok"}, media_type="application/json")
-
 # === Webhook Telegram (Amvera) ===
 router = APIRouter()
 @router.post("/webhook", response_class=JSONResponse)
@@ -281,6 +284,11 @@ app.include_router(crypto_router)  # CryptoBot Webhook
 async def root():
     return {"status": "ok"}
 
+if not reminder_task_started:
+    asyncio.create_task(check_subscription_reminders())
+    asyncio.create_task(weekly_backup())  # запуск бэкапа
+    reminder_task_started = True
+    
 # === Сайты ==== 
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -305,10 +313,7 @@ async def check_subscription_reminders():
         try:
             print("🔔 Проверка напоминаний о подписках...")
             tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-            cursor.execute("""
-                SELECT user_id FROM users
-                WHERE subscribed = 1 AND subscription_expires = ?
-            """, (tomorrow,))
+            cursor.execute("SELECT user_id FROM users WHERE subscribed = 1 AND subscription_expires = ?", (tomorrow,))
             users = cursor.fetchall()
             for user_id_tuple in users:
                 user_id = user_id_tuple[0]
@@ -321,6 +326,29 @@ async def check_subscription_reminders():
                     print(f"📨 Напоминание отправлено пользователю {user_id}")
                 except Exception as e:
                     logging.warning(f"❌ Не удалось отправить сообщение {user_id}: {e}")
+
+            # Новая часть: уведомление о завершении подписки сегодня
+            today = datetime.now().strftime("%Y-%m-%d")
+            cursor.execute("SELECT user_id FROM users WHERE subscribed = 1 AND subscription_expires = ?", (today,))
+            users_expired = cursor.fetchall()
+            for user_id_tuple in users_expired:
+                user_id = user_id_tuple[0]
+                try:
+                    # Снять подписку
+                    cursor.execute(
+                        "UPDATE users SET subscribed = 0, subscription_expires = NULL WHERE user_id = ?",
+                        (user_id,)
+                    )
+                    conn.commit()
+                    await bot.send_message(
+                        user_id,
+                        "🔴 <b>Ваша подписка завершилась сегодня.</b>\nДля продолжения оформления — оплатите повторно.",
+                        parse_mode="HTML"
+                    )
+                    print(f"📨 Уведомление об окончании подписки отправлено {user_id}")
+                except Exception as e:
+                    logging.warning(f"❌ Не удалось отправить финальное уведомление {user_id}: {e}")
+
         except Exception as e:
             logging.error(f"❌ Ошибка при проверке подписок: {e}", exc_info=True)
         await asyncio.sleep(3600)  # Проверка раз в час
@@ -583,6 +611,11 @@ def admin_inline_keyboard():
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="start_broadcast")],
         [InlineKeyboardButton(text="📬 Отправить пост", callback_data="start_broadcast")]
     ])
+def broadcast_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Всем пользователям", callback_data="broadcast_all")],
+        [InlineKeyboardButton(text="Только подписчикам", callback_data="broadcast_subs")]
+    ])
 
 # === Универсальная функция отправки логов ===
 async def send_log_file(message: Message, filename: str):
@@ -677,7 +710,7 @@ async def initiate_broadcast(callback: types.CallbackQuery, state: FSMContext):
 async def process_broadcast_content(message: Message, state: FSMContext):
     await state.clear()
     await state.clear()
-    cursor.execute("SELECT user_id FROM users")
+    cursor.execute("SELECT user_id FROM users WHERE subscribed = 1")
     users = [row[0] for row in cursor.fetchall()]
 
     success, failed = 0, 0
@@ -737,7 +770,7 @@ async def project_links(message: Message):
     ]
     await message.answer("📌 <b>Наши другие проекты:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
 
-
+# === Оплата подписки пользователем === 
 @dp.message(Command("buy"))
 @dp.message(F.text == "💰 Купить подписку")
 async def buy_subscription(message: Message):
@@ -755,9 +788,96 @@ async def buy_subscription(message: Message):
                 inline_keyboard=[[InlineKeyboardButton(text="Оплатить $1", url=invoice_url)]]
             )
         )
+        await message.answer(
+            "⏳ После оплаты администратор вручную активирует вашу подписку.\n"
+            "Если хотите ускорить процесс — напишите админу свой ID!"
+        )
     except Exception as e:
         await message.answer(f"❌ Ошибка создания подписки: {e}")
+
+# ========== ОБРАБОТЧИК WEBHOOK ОТ CRYPTOBOT ==========
+crypto_router = APIRouter()
+
+@crypto_router.post("/cryptobot", response_class=JSONResponse)
+async def cryptobot_webhook(request: Request):
+    try:
+        data = await request.json()
+        logging.info(f"🔔 Webhook от CryptoBot: {data}")
+
+        if data.get("status") == "paid":
+            user_id = int(data.get("payload"))
+            amount = data.get("amount")
+            invoice_id = data.get("invoice_id")
         
+
+            # Уведомляем админа, не активируя подписку!
+            text = (
+                f"💸 <b>Поступила новая оплата!</b>\n"
+                f"🧑‍💻 User ID: <code>{user_id}</code>\n"
+                f"💰 Сумма: {amount} USDT\n"
+                f"🧾 Invoice: <code>{invoice_id}</code>\n\n"
+                f"⚡ Для активации подпишки напиши:\n"
+                f"/activate {user_id}"
+            )
+            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+            logging.info(f"🟢 Админ уведомлён о платеже от {user_id} ({amount})")
+    except Exception as e:
+        logging.error(f"❌ Ошибка Webhook CryptoBot: {e}", exc_info=True)
+    return JSONResponse(content={"status": "ok"}, media_type="application/json")
+
+# ========== РУЧНАЯ АКТИВАЦИЯ ==========
+@dp.message(Command("activate"))
+async def manual_activate(message: Message):
+    admin_id = message.from_user.id
+    if not is_admin(admin_id):
+        await message.answer("❌ Только для администратора!")
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("⚠️ Используй так: /activate <user_id>")
+        return
+    try:
+        target_id = int(args[1])
+        activate_subscription(target_id)
+        await message.answer(f"✅ Подписка активирована для {target_id}")
+        await bot.send_message(target_id, "🎉 Ваша подписка активирована администратором! Спасибо за оплату.")
+        logging.info(f"[ADMIN] Подписка вручную открыта для {target_id}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+# ========== ТЕСТОВАЯ АКТИВАЦИЯ ==========
+@dp.message(Command("testpay"))
+async def test_payment(message: Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ Только для администратора!")
+        return
+    activate_subscription(user_id)
+    await message.answer("✅ Тестовая оплата прошла! Подписка активирована на 30 дней.")
+    logging.info(f"🚦 [TESTPAY] Подписка активирована вручную для {user_id}")
+
+        
+@dp.message(Command("pending_payments"))
+async def show_pending_payments(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Доступ запрещён")
+        return
+    # Загрузить все оплаты
+    with open(payments_path, "r", encoding="utf-8") as f:
+        payments = json.load(f)
+    # Получить всех подписанных пользователей
+    cursor.execute("SELECT user_id FROM users WHERE subscribed = 1")
+    active_users = set(row[0] for row in cursor.fetchall())
+    # Найти тех, у кого есть оплата, но нет подписки
+    pending = [p for p in payments if int(p["user_id"]) not in active_users]
+    if not pending:
+        await message.answer("✅ Нет неоплаченных/неактивированных платежей.")
+        return
+    msg = "⏳ <b>Ожидают активации:</b>\n" + "\n".join(
+        f"• <code>{p['user_id']}</code> — {p['amount']} USDT, invoice: {p['invoice_id']}" for p in pending[-20:]
+    )
+    await message.answer(msg, parse_mode="HTML")
+
 # === ✍️ Цитаты дня ===
 
 @dp.message(F.text.in_(['✍️ Цитаты дня']))
