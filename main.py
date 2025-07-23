@@ -275,6 +275,56 @@ async def lifespan(app: FastAPI):
     yield
     await session.close()
 
+# ========== ОБРАБОТЧИК WEBHOOK ОТ CRYPTOBOT ==========
+crypto_router = APIRouter()
+
+@crypto_router.post("/cryptobot", response_class=JSONResponse)
+async def cryptobot_webhook(request: Request):
+    try:
+        data = await request.json()
+        logging.info(f"🔔 Webhook от CryptoBot: {data}")
+
+        if data.get("status") == "paid":
+            user_id = int(data.get("payload"))
+            amount = data.get("amount")
+            invoice_id = data.get("invoice_id")
+        
+
+            # Уведомляем админа, не активируя подписку!
+            text = (
+                f"💸 <b>Поступила новая оплата!</b>\n"
+                f"🧑‍💻 User ID: <code>{user_id}</code>\n"
+                f"💰 Сумма: {amount} USDT\n"
+                f"🧾 Invoice: <code>{invoice_id}</code>\n\n"
+                f"⚡ Для активации подпишки напиши:\n"
+                f"/activate {user_id}"
+            )
+            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+            logging.info(f"🟢 Админ уведомлён о платеже от {user_id} ({amount})")
+    except Exception as e:
+        logging.error(f"❌ Ошибка Webhook CryptoBot: {e}", exc_info=True)
+    return JSONResponse(content={"status": "ok"}, media_type="application/json")
+
+# ========== РУЧНАЯ АКТИВАЦИЯ ==========
+@dp.message(Command("activate"))
+async def manual_activate(message: Message):
+    admin_id = message.from_user.id
+    if not is_admin(admin_id):
+        await message.answer("❌ Только для администратора!")
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("⚠️ Используй так: /activate <user_id>")
+        return
+    try:
+        target_id = int(args[1])
+        activate_subscription(target_id)
+        await message.answer(f"✅ Подписка активирована для {target_id}")
+        await bot.send_message(target_id, "🎉 Ваша подписка активирована администратором! Спасибо за оплату.")
+        logging.info(f"[ADMIN] Подписка вручную открыта для {target_id}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
 app = FastAPI(lifespan=lifespan)
 app.include_router(router)         # Telegram Webhook
 app.include_router(crypto_router)  # CryptoBot Webhook
@@ -793,56 +843,7 @@ async def buy_subscription(message: Message):
         )
     except Exception as e:
         await message.answer(f"❌ Ошибка создания подписки: {e}")
-
-# ========== ОБРАБОТЧИК WEBHOOK ОТ CRYPTOBOT ==========
-crypto_router = APIRouter()
-
-@crypto_router.post("/cryptobot", response_class=JSONResponse)
-async def cryptobot_webhook(request: Request):
-    try:
-        data = await request.json()
-        logging.info(f"🔔 Webhook от CryptoBot: {data}")
-
-        if data.get("status") == "paid":
-            user_id = int(data.get("payload"))
-            amount = data.get("amount")
-            invoice_id = data.get("invoice_id")
-        
-
-            # Уведомляем админа, не активируя подписку!
-            text = (
-                f"💸 <b>Поступила новая оплата!</b>\n"
-                f"🧑‍💻 User ID: <code>{user_id}</code>\n"
-                f"💰 Сумма: {amount} USDT\n"
-                f"🧾 Invoice: <code>{invoice_id}</code>\n\n"
-                f"⚡ Для активации подпишки напиши:\n"
-                f"/activate {user_id}"
-            )
-            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
-            logging.info(f"🟢 Админ уведомлён о платеже от {user_id} ({amount})")
-    except Exception as e:
-        logging.error(f"❌ Ошибка Webhook CryptoBot: {e}", exc_info=True)
-    return JSONResponse(content={"status": "ok"}, media_type="application/json")
-
-# ========== РУЧНАЯ АКТИВАЦИЯ ==========
-@dp.message(Command("activate"))
-async def manual_activate(message: Message):
-    admin_id = message.from_user.id
-    if not is_admin(admin_id):
-        await message.answer("❌ Только для администратора!")
-        return
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("⚠️ Используй так: /activate <user_id>")
-        return
-    try:
-        target_id = int(args[1])
-        activate_subscription(target_id)
-        await message.answer(f"✅ Подписка активирована для {target_id}")
-        await bot.send_message(target_id, "🎉 Ваша подписка активирована администратором! Спасибо за оплату.")
-        logging.info(f"[ADMIN] Подписка вручную открыта для {target_id}")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+ 
 
 # ========== ТЕСТОВАЯ АКТИВАЦИЯ ==========
 @dp.message(Command("testpay"))
