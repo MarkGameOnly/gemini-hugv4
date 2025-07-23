@@ -245,6 +245,10 @@ async def telegram_webhook(request: Request):
 # === Endpoint для CryptoBot Webhook ===
 @crypto_router.post("/cryptobot", response_class=JSONResponse)
 async def cryptobot_webhook(request: Request):
+    """
+    Вебхук для CryptoBot.
+    Автоматически уведомляет админа и присылает кнопку для активации подписки.
+    """
     try:
         data = await request.json()
         logging.info(f"🔔 Webhook от CryptoBot: {data}")
@@ -253,7 +257,9 @@ async def cryptobot_webhook(request: Request):
             user_id = int(data.get("payload"))
             amount = data.get("amount")
             invoice_id = data.get("invoice_id")
-            # --- Инлайн-кнопка ---
+            # Сохраняем платеж в payments.json
+            save_payment(user_id, invoice_id, amount)
+            # Инлайн-кнопка для активации
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(
@@ -511,6 +517,7 @@ async def activate_user_callback(callback: types.CallbackQuery):
         await callback.answer("Готово! Подписка активирована.")
     except Exception as e:
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
+
 
 # === Обработчик выхода из Gemini ===
 
@@ -1215,3 +1222,4 @@ async def gallery():
         return HTMLResponse(img_tags)
     except Exception as e:
         return HTMLResponse(f"<b>Ошибка загрузки галереи: {e}</b>", status_code=500)
+
