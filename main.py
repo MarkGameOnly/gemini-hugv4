@@ -253,16 +253,23 @@ async def cryptobot_webhook(request: Request):
             user_id = int(data.get("payload"))
             amount = data.get("amount")
             invoice_id = data.get("invoice_id")
-            # Уведомляем админа, не активируя подписку!
+            # --- Инлайн-кнопка ---
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="✅ Активировать",
+                        callback_data=f"activate_user_{user_id}"
+                    )]
+                ]
+            )
             text = (
                 f"💸 <b>Поступила новая оплата!</b>\n"
                 f"🧑‍💻 User ID: <code>{user_id}</code>\n"
                 f"💰 Сумма: {amount} USDT\n"
                 f"🧾 Invoice: <code>{invoice_id}</code>\n\n"
-                f"⚡ Для активации подпишки напиши:\n"
-                f"/activate {user_id}"
+                f"⚡ Для активации подпишки нажми кнопку ниже."
             )
-            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+            await bot.send_message(ADMIN_ID, text, parse_mode="HTML", reply_markup=keyboard)
             logging.info(f"🟢 Админ уведомлён о платеже от {user_id} ({amount})")
     except Exception as e:
         logging.error(f"❌ Ошибка Webhook CryptoBot: {e}", exc_info=True)
@@ -486,6 +493,24 @@ def gemini_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]]
     )
 
+# === Callback обработчик кнопки Криптобота === 
+
+@dp.callback_query(lambda c: c.data.startswith("activate_user_"))
+async def activate_user_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Только для администратора!", show_alert=True)
+        return
+
+    try:
+        user_id = int(callback.data.replace("activate_user_", ""))
+        activate_subscription(user_id)
+        await callback.message.edit_reply_markup()  # убираем кнопку
+        await callback.message.answer(f"✅ Подписка активирована для <code>{user_id}</code>!", parse_mode="HTML")
+        await bot.send_message(user_id, "🎉 Ваша подписка активирована администратором! Спасибо за оплату.")
+        logging.info(f"[ADMIN] Подписка вручную открыта для {user_id} (через inline)")
+        await callback.answer("Готово! Подписка активирована.")
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
 
 # === Обработчик выхода из Gemini ===
 
