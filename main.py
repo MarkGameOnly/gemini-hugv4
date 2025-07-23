@@ -601,6 +601,7 @@ async def cmd_profile(message: Message):
 # Состояние для FSM
 class AdminStates(StatesGroup):
     awaiting_broadcast_content = State()
+    awaiting_user_id = State()
 
 def log_admin_action(user_id: int, action: str):
     with open("admin.log", "a", encoding="utf-8") as f:
@@ -609,12 +610,17 @@ def log_admin_action(user_id: int, action: str):
 def is_admin(user_id: int) -> bool:
     return str(user_id) == str(ADMIN_ID)
 
+# Сохраняем последние id сообщений с карточками для удаления при смене страницы
+admin_last_card_msgs = {}
+
 @dp.message(Command("admin"))
-async def admin_panel(message: Message):
+async def admin_panel(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer("❌ Доступ запрещён")
         return
+
+    await state.update_data(admin_panel_msg_id=message.message_id)  # Сохраним id входного сообщения
 
     log_admin_action(user_id, "Открыл админку /admin")
     logging.info(f"🕤 Запрос на админку от: {user_id}")
@@ -644,7 +650,7 @@ async def admin_panel(message: Message):
 
     await message.answer(text, parse_mode="HTML", reply_markup=admin_inline_keyboard())
 
-# === Инлайн кнопки ===
+
 def admin_inline_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 Логи", callback_data="view_logs")],
@@ -654,7 +660,6 @@ def admin_inline_keyboard():
         [InlineKeyboardButton(text="📋 Список пользователей", callback_data="user_list:1:all")],
         [InlineKeyboardButton(text="🔍 Найти по ID", callback_data="find_user_id")],
     ])
-
 
 def broadcast_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -688,7 +693,7 @@ async def send_log_file(message: Message, filename: str):
         await message.answer(f"❌ Ошибка при чтении {filename}: {e}")
 
 @dp.callback_query(F.data.startswith("user_list"))
-async def admin_show_user_list(callback: types.CallbackQuery):
+async def admin_show_user_list(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
@@ -699,7 +704,17 @@ async def admin_show_user_list(callback: types.CallbackQuery):
     per_page = 10
     offset = (page - 1) * per_page
 
+    # 1. Удаляем старые карточки, если были
+    old_msgs = admin_last_card_msgs.get(callback.from_user.id, [])
+    for msg_id in old_msgs:
+        try:
+            await callback.bot.delete_message(callback.message.chat.id, msg_id)
+        except Exception:
+            pass  # иногда сообщения уже удалены
+    admin_last_card_msgs[callback.from_user.id] = []
+
     # SQL фильтр
+# 2. Фильтруем юзеров
     if filter_type == "no_sub":
         cursor.execute(
             "SELECT user_id, usage_count, subscribed, subscription_expires FROM users WHERE subscribed = 0 ORDER BY joined_at DESC LIMIT ? OFFSET ?",
@@ -712,46 +727,53 @@ async def admin_show_user_list(callback: types.CallbackQuery):
         )
 
     users = cursor.fetchall()
-
     if not users:
         await callback.message.edit_text(f"Пользователей не найдено на этой странице (страница {page}).", reply_markup=None)
         await callback.answer()
         return
 
-    text = f"👥 <b>Пользователи — страница {page}</b>\nФильтр: <b>{'Без подписки' if filter_type == 'no_sub' else 'Все'}</b>\n\n"
-    for user_id, usage_count, subscribed, expires in users:
-        sub_status = "🟢 Активна" if subscribed else "🔴 Нет подписки"
-        line = f"<code>{user_id}</code> — <b>{usage_count}</b> запросов — {sub_status}"
-        if subscribed and expires:
-            line += f" (до: <b>{expires}</b>)"
-        keyboard = None
-        if not subscribed:
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton("✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]
-            ])
-        text += line + "\n"
-
-    # Кнопки пагинации и фильтров
+    # 3. Навигация и фильтры
     nav_buttons = [
-        InlineKeyboardButton("⬅️", callback_data=f"user_list:{max(1,page-1)}:{filter_type}"),
-        InlineKeyboardButton("➡️", callback_data=f"user_list:{page+1}:{filter_type}"),
-        InlineKeyboardButton("Все", callback_data="user_list:1:all"),
-        InlineKeyboardButton("Без подписки", callback_data="user_list:1:no_sub"),
+        InlineKeyboardButton(text="⬅️", callback_data=f"user_list:{max(1, page-1)}:{filter_type}"),
+        InlineKeyboardButton(text="➡️", callback_data=f"user_list:{page+1}:{filter_type}"),
+        InlineKeyboardButton(text="Все", callback_data="user_list:1:all"),
+        InlineKeyboardButton(text="Без подписки", callback_data="user_list:1:no_sub"),
     ]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[nav_buttons[i:i+2] for i in range(0, len(nav_buttons), 2)])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    nav_keyboard = InlineKeyboardMarkup(inline_keyboard=[nav_buttons[i:i+2] for i in range(0, len(nav_buttons), 2)])
+    text = f"👥 <b>Пользователи — страница {page}</b>\nФильтр: <b>{'Без подписки' if filter_type == 'no_sub' else 'Все'}</b>\n"
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=nav_keyboard)
     await callback.answer()
 
-# === Поиск пользователя по ID === 
+    # 4. Карточки юзеров (старые + новые)
+    #  (Сначала новые, потом старые: самые новые сверху, самые ранние — внизу)
+    msg_ids = []
+    for user_id, usage_count, subscribed, expires in users:
+        sub_status = "🟢 Активна" if subscribed else "🔴 Нет подписки"
+        user_text = f"👤 <b>ID:</b> <code>{user_id}</code>\nЗапросов: <b>{usage_count}</b>\nПодписка: {sub_status}"
+        if subscribed and expires:
+            user_text += f"\nДо: <b>{expires}</b>"
+        keyboard = None
+        if not subscribed:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton("✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]]
+            )
+        # лимит 0.07 чтобы Telegram не ругался (можно уменьшить до 0.03)
+        m = await callback.message.answer(user_text, parse_mode="HTML", reply_markup=keyboard)
+        msg_ids.append(m.message_id)
+        await asyncio.sleep(0.07)
+    # Сохраняем id карточек для автоудаления при перелистывании
+    admin_last_card_msgs[callback.from_user.id] = msg_ids
 
+
+# Поиск по ID
 @dp.callback_query(F.data == "find_user_id")
 async def start_find_user_id(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state("awaiting_user_id")
+    await state.set_state(AdminStates.awaiting_user_id)
     await callback.message.answer("Введите ID пользователя для поиска:", reply_markup=ForceReply())
     await callback.answer()
 
-@dp.message(lambda m, s: s.get_state() == "awaiting_user_id")
-async def process_find_user_id(message: Message, state: FSMContext):
+@dp.message(AdminStates.awaiting_user_id)
+async def process_find_user_id(message: types.Message, state: FSMContext):
     await state.clear()
     try:
         user_id = int(message.text.strip())
