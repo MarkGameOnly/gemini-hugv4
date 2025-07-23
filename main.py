@@ -62,6 +62,10 @@ conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 FREE_USES_LIMIT = 10
 
+# === Routers объявляем СРАЗУ после импортов и переменных ===
+router = APIRouter()
+crypto_router = APIRouter()
+
 def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -226,9 +230,6 @@ def save_payment(user_id, invoice_id, amount):
         "timestamp": datetime.now().isoformat()
     })
 
-# === Routers объявляем СРАЗУ после импортов и переменных ===
-router = APIRouter()
-crypto_router = APIRouter()
 
 # === Endpoint для Telegram Webhook ===
 @router.post("/webhook", response_class=JSONResponse)
