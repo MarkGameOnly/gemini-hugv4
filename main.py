@@ -302,37 +302,6 @@ for log_file in ["webhook.log", "errors.log"]:
 
 reminder_task_started = False  # глобальный флаг вне lifespan
 
-# === И только теперь создаём app и регистрируем роутеры! ===
-app = FastAPI(lifespan=lifespan)
-app.include_router(router)
-app.include_router(crypto_router)
-
-@app.get("/")
-async def root():
-    return {"status": "ok"}
-
-# Не делай asyncio.create_task вне lifespan!
-# Все фоновые задачи лучше запускать через lifespan!
-
-
-# === Сайты ==== 
-
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://itm-code.ru",
-        "https://itm-code.ru/geminiapp",
-        "https://www.itm-code.ru",
-        "http://localhost:3000",
-        "http://localhost"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # === Фоновая задача — напоминания о подписках ===
 async def check_subscription_reminders():
     while True:
@@ -378,6 +347,37 @@ async def check_subscription_reminders():
         except Exception as e:
             logging.error(f"❌ Ошибка при проверке подписок: {e}", exc_info=True)
         await asyncio.sleep(3600)  # Проверка раз в час
+
+# === И только теперь создаём app и регистрируем роутеры! ===
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)
+app.include_router(crypto_router)
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
+# Не делай asyncio.create_task вне lifespan!
+# Все фоновые задачи лучше запускать через lifespan!
+
+
+# === Сайты ==== 
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://itm-code.ru",
+        "https://itm-code.ru/geminiapp",
+        "https://www.itm-code.ru",
+        "http://localhost:3000",
+        "http://localhost"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # === Состояния ===
