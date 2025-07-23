@@ -34,6 +34,8 @@ from openai import AsyncOpenAI
 from crypto import create_invoice
 from openai import APITimeoutError
 import shutil
+from aiogram.types import ForceReply
+
 # === Настройка логирования ===
 logging.basicConfig(
     level=logging.INFO,
@@ -649,8 +651,10 @@ def admin_inline_keyboard():
         [InlineKeyboardButton(text="🗑 Очистить логи", callback_data="clear_logs")],
         [InlineKeyboardButton(text="📄 Admin лог", callback_data="view_admin_log")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="start_broadcast")],
-        [InlineKeyboardButton(text="📋 Список пользователей", callback_data="user_list")],  # <-- NEW
+        [InlineKeyboardButton(text="📋 Список пользователей", callback_data="user_list:1:all")],
+        [InlineKeyboardButton(text="🔍 Найти по ID", callback_data="find_user_id")],
     ])
+
 
 def broadcast_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -683,37 +687,92 @@ async def send_log_file(message: Message, filename: str):
         logging.exception(f"Ошибка при отправке {filename}")
         await message.answer(f"❌ Ошибка при чтении {filename}: {e}")
 
-@dp.callback_query(F.data == "user_list")
+@dp.callback_query(F.data.startswith("user_list"))
 async def admin_show_user_list(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.message.answer("❌ Доступ запрещён")
         return
 
-    # Список последних 10 пользователей без подписки (или всех — можно изменить)
-    cursor.execute("SELECT user_id, usage_count, subscribed, subscription_expires FROM users ORDER BY joined_at DESC LIMIT 10")
+    parts = callback.data.split(":")
+    page = int(parts[1]) if len(parts) > 1 else 1
+    filter_type = parts[2] if len(parts) > 2 else "all"
+    per_page = 10
+    offset = (page - 1) * per_page
+
+    # SQL фильтр
+    if filter_type == "no_sub":
+        cursor.execute(
+            "SELECT user_id, usage_count, subscribed, subscription_expires FROM users WHERE subscribed = 0 ORDER BY joined_at DESC LIMIT ? OFFSET ?",
+            (per_page, offset)
+        )
+    else:
+        cursor.execute(
+            "SELECT user_id, usage_count, subscribed, subscription_expires FROM users ORDER BY joined_at DESC LIMIT ? OFFSET ?",
+            (per_page, offset)
+        )
+
     users = cursor.fetchall()
 
     if not users:
-        await callback.message.answer("Пользователей не найдено.")
+        await callback.message.edit_text(f"Пользователей не найдено на этой странице (страница {page}).", reply_markup=None)
         await callback.answer()
         return
 
+    text = f"👥 <b>Пользователи — страница {page}</b>\nФильтр: <b>{'Без подписки' if filter_type == 'no_sub' else 'Все'}</b>\n\n"
     for user_id, usage_count, subscribed, expires in users:
         sub_status = "🟢 Активна" if subscribed else "🔴 Нет подписки"
-        text = f"👤 <b>ID:</b> <code>{user_id}</code>\n" \
-               f"Запросов: <b>{usage_count}</b>\n" \
-               f"Подписка: {sub_status}"
+        line = f"<code>{user_id}</code> — <b>{usage_count}</b> запросов — {sub_status}"
+        if subscribed and expires:
+            line += f" (до: <b>{expires}</b>)"
+        keyboard = None
+        if not subscribed:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton("✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]
+            ])
+        text += line + "\n"
+
+    # Кнопки пагинации и фильтров
+    nav_buttons = [
+        InlineKeyboardButton("⬅️", callback_data=f"user_list:{max(1,page-1)}:{filter_type}"),
+        InlineKeyboardButton("➡️", callback_data=f"user_list:{page+1}:{filter_type}"),
+        InlineKeyboardButton("Все", callback_data="user_list:1:all"),
+        InlineKeyboardButton("Без подписки", callback_data="user_list:1:no_sub"),
+    ]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[nav_buttons[i:i+2] for i in range(0, len(nav_buttons), 2)])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
+
+# === Поиск пользователя по ID === 
+
+@dp.callback_query(F.data == "find_user_id")
+async def start_find_user_id(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state("awaiting_user_id")
+    await callback.message.answer("Введите ID пользователя для поиска:", reply_markup=ForceReply())
+    await callback.answer()
+
+@dp.message(lambda m, s: s.get_state() == "awaiting_user_id")
+async def process_find_user_id(message: Message, state: FSMContext):
+    await state.clear()
+    try:
+        user_id = int(message.text.strip())
+        cursor.execute("SELECT user_id, usage_count, subscribed, subscription_expires FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            await message.answer("Пользователь не найден.")
+            return
+        user_id, usage_count, subscribed, expires = row
+        sub_status = "🟢 Активна" if subscribed else "🔴 Нет подписки"
+        text = f"👤 <b>ID:</b> <code>{user_id}</code>\nЗапросов: <b>{usage_count}</b>\nПодписка: {sub_status}"
         if subscribed and expires:
             text += f"\nДо: <b>{expires}</b>"
         keyboard = None
         if not subscribed:
             keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]
-                ]
+                inline_keyboard=[[InlineKeyboardButton(text="✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]]
             )
-        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-    await callback.answer()
+        await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка поиска: {e}")
 
 # === Команды логов ===
 @dp.message(Command("logs"))
