@@ -17,7 +17,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 import aiohttp
 import httpx
-from openai import AsyncOpenAI
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import (
     Message, BotCommand,
@@ -31,7 +30,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.utils.markdown import hbold
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
-from openai import AsyncOpenAI
 from crypto import create_invoice
 from openai import APITimeoutError
 import shutil
@@ -1333,3 +1331,26 @@ async def gallery():
     except Exception as e:
         return HTMLResponse(f"<b>Ошибка загрузки галереи: {e}</b>", status_code=500)
 
+
+
+import httpx
+
+AMVERA_LLM_URL = "https://lllm.amvera.io/models/llama"
+AMVERA_TOKEN = os.getenv("AMVERA_TOKEN")
+
+async def amvera_generate_text(prompt: str) -> str:
+    headers = {
+        "X-Auth-Token": f"Bearer {AMVERA_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "prompt": prompt,
+        "temperature": 0.7,
+        "max_tokens": 400,
+        "stream": False
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(AMVERA_LLM_URL, headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("result", "⚠️ Ответ не получен.")
