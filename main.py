@@ -30,7 +30,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.utils.markdown import hbold
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
-import httpx
+from openai import AsyncOpenAI
 from crypto import create_invoice
 from openai import APITimeoutError
 import shutil
@@ -51,26 +51,6 @@ logging.basicConfig(
 # === Загрузка переменных окружения ===
 
 load_dotenv()
-
-AMVERA_TOKEN = os.getenv("AMVERA_TOKEN")
-AMVERA_API_URL = "https://llm.amvera.ai/api/v1/completions"
-
-async def amvera_generate_text(prompt: str, max_tokens: int = 400) -> str:
-    headers = {
-        "Content-Type": "application/json",
-        "X-Auth-Token": f"Bearer {AMVERA_TOKEN}"
-    }
-    payload = {
-        "model": "llama-3-70b-instruct",
-        "prompt": prompt,
-        "max_tokens": max_tokens,
-        "temperature": 0.7
-    }
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(AMVERA_API_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("text", "").strip()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
@@ -112,7 +92,6 @@ def init_db():
         cursor.execute(
             "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 1, NULL, ?)",
             (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"))
-        )
     conn.commit()
 init_db()
 
@@ -739,12 +718,10 @@ async def admin_show_user_list(callback: types.CallbackQuery, state: FSMContext)
         cursor.execute(
             "SELECT user_id, usage_count, subscribed, subscription_expires FROM users WHERE subscribed = 0 ORDER BY joined_at DESC LIMIT ? OFFSET ?",
             (per_page, offset)
-        )
     else:
         cursor.execute(
             "SELECT user_id, usage_count, subscribed, subscription_expires FROM users ORDER BY joined_at DESC LIMIT ? OFFSET ?",
             (per_page, offset)
-        )
 
     users = cursor.fetchall()
     if not users:
@@ -982,7 +959,6 @@ async def buy_subscription(message: Message):
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="Оплатить $1", url=invoice_url)]]
             )
-        )
         await message.answer(
             "⏳ После оплаты администратор вручную активирует вашу подписку.\n"
             "Если хотите ускорить процесс — напишите админу свой ID!"
@@ -1044,9 +1020,9 @@ async def generate_text_logic(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
-        client = text_client
+        # client заменён на amvera_generate_text
 
-        if client is None:
+        # пропущена проверка клиента (Amvera используется напрямую)
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
             return
 
@@ -1059,7 +1035,7 @@ async def generate_text_logic(message: Message, state: FSMContext):
             messages=[{"role": "user", "content": "Напиши вдохновляющую цитату дня"}],
             max_tokens=100,
         )
-        text = response_text.strip()
+        text = response.choices[0].message.content.strip()
         await message.answer(f"🗋 Цитата дня:\n{text}")
 
         if str(user_id) != str(ADMIN_ID):
@@ -1123,9 +1099,9 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
             return
 
         ensure_user(user_id)
-        client = text_client
+        # client заменён на amvera_generate_text
 
-        if client is None:
+        # пропущена проверка клиента (Amvera используется напрямую)
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
             return
 
@@ -1136,10 +1112,8 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         await message.answer("💭 Думаю...")
 
         response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        reply = response_text.strip()
+            
+        reply = response.choices[0].message.content.strip()
         await message.answer(reply)
 
         if str(user_id) != str(ADMIN_ID):
@@ -1202,9 +1176,9 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
     ensure_user(user_id)
-    client = text_client
+    # client заменён на amvera_generate_text
 
-    if client is None:
+    # пропущена проверка клиента (Amvera используется напрямую)
         await callback.message.answer("❌ AI-клиент не инициализирован.")
         await callback.answer()
         return
@@ -1243,10 +1217,8 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
     try:
         await callback.message.answer("💭 Думаю...")
         response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        reply = response_text.strip()
+            
+        reply = response.choices[0].message.content.strip()
         await callback.message.answer(reply)
 
         if str(user_id) != str(ADMIN_ID):
@@ -1332,7 +1304,7 @@ async def analyze_image(
             max_tokens=500
         )
 
-        answer = vision_response_text.strip()
+        answer = vision_response.choices[0].message.content.strip()
         return HTMLResponse(content=f"""
             <div style="padding:16px">
                 <b>Ваш вопрос:</b> {prompt}<br>
