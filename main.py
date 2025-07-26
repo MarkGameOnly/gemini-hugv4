@@ -30,6 +30,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.utils.markdown import hbold
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
+from openai import AsyncOpenAI
 from crypto import create_invoice
 from openai import APITimeoutError
 import shutil
@@ -55,7 +56,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# Удалено: AsyncOpenAI больше не используется
+text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 image_client = AsyncOpenAI(api_key=OPENAI_API_KEY)  # Использовать один и тот же ключ!
 
 # === Инициализация базы данных ===
@@ -90,7 +91,8 @@ def init_db():
     if not cursor.fetchone():
         cursor.execute(
             "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 1, NULL, ?)",
-        ((ADMIN_ID, datetime.now().strftime("%Y-%m-%d"), "default"))
+            (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"))
+        )
     conn.commit()
 init_db()
 
@@ -717,10 +719,12 @@ async def admin_show_user_list(callback: types.CallbackQuery, state: FSMContext)
         cursor.execute(
             "SELECT user_id, usage_count, subscribed, subscription_expires FROM users WHERE subscribed = 0 ORDER BY joined_at DESC LIMIT ? OFFSET ?",
             (per_page, offset)
+        )
     else:
         cursor.execute(
             "SELECT user_id, usage_count, subscribed, subscription_expires FROM users ORDER BY joined_at DESC LIMIT ? OFFSET ?",
             (per_page, offset)
+        )
 
     users = cursor.fetchall()
     if not users:
@@ -958,6 +962,7 @@ async def buy_subscription(message: Message):
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="Оплатить $1", url=invoice_url)]]
             )
+        )
         await message.answer(
             "⏳ После оплаты администратор вручную активирует вашу подписку.\n"
             "Если хотите ускорить процесс — напишите админу свой ID!"
@@ -1019,9 +1024,9 @@ async def generate_text_logic(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
-        # client заменён на amvera_generate_text
+        client = text_client
 
-        # пропущена проверка клиента (Amvera используется напрямую)
+        if client is None:
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
             return
 
@@ -1098,9 +1103,9 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
             return
 
         ensure_user(user_id)
-        # client заменён на amvera_generate_text
+        client = text_client
 
-        # пропущена проверка клиента (Amvera используется напрямую)
+        if client is None:
             await message.answer("❌ Ошибка: AI-клиент не настроен.")
             return
 
@@ -1111,7 +1116,9 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
         await message.answer("💭 Думаю...")
 
         response = await client.chat.completions.create(
-            
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
         reply = response.choices[0].message.content.strip()
         await message.answer(reply)
 
@@ -1175,9 +1182,9 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
     ensure_user(user_id)
-    # client заменён на amvera_generate_text
+    client = text_client
 
-    # пропущена проверка клиента (Amvera используется напрямую)
+    if client is None:
         await callback.message.answer("❌ AI-клиент не инициализирован.")
         await callback.answer()
         return
@@ -1216,7 +1223,9 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
     try:
         await callback.message.answer("💭 Думаю...")
         response = await client.chat.completions.create(
-            
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
         reply = response.choices[0].message.content.strip()
         await callback.message.answer(reply)
 
@@ -1331,26 +1340,3 @@ async def gallery():
     except Exception as e:
         return HTMLResponse(f"<b>Ошибка загрузки галереи: {e}</b>", status_code=500)
 
-
-
-import httpx
-
-AMVERA_LLM_URL = "https://lllm.amvera.io/models/llama"
-AMVERA_TOKEN = os.getenv("AMVERA_TOKEN")
-
-async def amvera_generate_text(prompt: str) -> str:
-    headers = {
-        "X-Auth-Token": f"Bearer {AMVERA_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "prompt": prompt,
-        "temperature": 0.7,
-        "max_tokens": 400,
-        "stream": False
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(AMVERA_LLM_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("result", "⚠️ Ответ не получен.")
