@@ -90,7 +90,7 @@ def init_db():
     if not cursor.fetchone():
         cursor.execute(
             "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 1, NULL, ?)",
-            (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"), "default")
+        ((ADMIN_ID, datetime.now().strftime("%Y-%m-%d"), "default"))
     conn.commit()
 init_db()
 
