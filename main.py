@@ -17,6 +17,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import aiohttp
 import httpx
+from openai import AsyncOpenAI
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import (
     Message, BotCommand,
