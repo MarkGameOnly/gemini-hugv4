@@ -56,7 +56,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+# Удалено: AsyncOpenAI больше не используется
 image_client = AsyncOpenAI(api_key=OPENAI_API_KEY)  # Использовать один и тот же ключ!
 
 # === Инициализация базы данных ===
@@ -91,7 +91,7 @@ def init_db():
     if not cursor.fetchone():
         cursor.execute(
             "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 1, NULL, ?)",
-            (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"))
+            (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"), "default")
     conn.commit()
 init_db()
 
