@@ -968,7 +968,7 @@ async def generate_text_logic(message: Message, state: FSMContext):
 
         await message.answer("💭 Думаю...")
         # Запрос к Gemini
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         response = await model.generate_content_async("Напиши вдохновляющую цитату дня")
         text = response.text
 
@@ -1037,7 +1037,7 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
             return
 
         await message.answer("💭 Думаю...")
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         response = await model.generate_content_async(prompt)
         reply = response.text
 
@@ -1134,7 +1134,7 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
 
     try:
         await callback.message.answer("💭 Думаю...")
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         response = await model.generate_content_async(prompt)
         reply = response.text
         await callback.message.answer(reply)
