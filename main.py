@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from contextlib import asynccontextmanager
 import json
 from pathlib import Path
+import shutil
 
 
 # === Импорты сторонних библиотек ===
@@ -33,8 +34,10 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from openai import AsyncOpenAI
 from crypto import create_invoice
 from openai import APITimeoutError
-import shutil
 from aiogram.types import ForceReply
+import google.generativeai as genai
+from fastapi.middleware.cors import CORSMiddleware
+
 
 # === Настройка логирования ===
 logging.basicConfig(
@@ -47,54 +50,45 @@ logging.basicConfig(
     ]
 )
 
-
 # === Загрузка переменных окружения ===
-
 load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-image_client = AsyncOpenAI(api_key=OPENAI_API_KEY)  # Использовать один и тот же ключ!
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# === Инициализация клиентов API ===
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY не установлен.")
+image_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
 
 # === Инициализация базы данных ===
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 FREE_USES_LIMIT = 10
-
-# === Routers объявляем СРАЗУ после импортов и переменных ===
-router = APIRouter()
-crypto_router = APIRouter()
-
-def init_db():
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            usage_count INTEGER DEFAULT 0,
-            subscribed INTEGER DEFAULT 0,
-            subscription_expires TEXT,
-            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            type TEXT,
-            prompt TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (ADMIN_ID,))
-    if not cursor.fetchone():
-        cursor.execute(
-            "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, 1, NULL, ?)",
-            (ADMIN_ID, datetime.now().strftime("%Y-%m-%d"))
-        )
-    conn.commit()
-init_db()
+cursor.execute(
+    """CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        usage_count INTEGER DEFAULT 0,
+        subscribed INTEGER DEFAULT 0,
+        subscription_expires TEXT,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )"""
+)
+cursor.execute(
+    """CREATE TABLE IF NOT EXISTS history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        type TEXT,
+        prompt TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )"""
+)
+conn.commit()
 
 
 # === Middleware EnsureUser ===
@@ -104,10 +98,10 @@ class EnsureUserMiddleware(BaseMiddleware):
             user_id = event.from_user.id
             cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
             if not cursor.fetchone():
-                is_admin = int(user_id) == ADMIN_ID
+                is_admin_user = int(user_id) == ADMIN_ID
                 cursor.execute(
                     "INSERT INTO users (user_id, usage_count, subscribed, subscription_expires, joined_at) VALUES (?, 0, ?, NULL, ?)",
-                    (user_id, 1 if is_admin else 0, datetime.now().strftime("%Y-%m-%d"))
+                    (user_id, 1 if is_admin_user else 0, datetime.now().strftime("%Y-%m-%d"))
                 )
                 conn.commit()
         return await handler(event, data)
@@ -119,26 +113,8 @@ dp = Dispatcher(bot=bot, storage=storage)
 dp.message.middleware(EnsureUserMiddleware())
 dp.callback_query.middleware(EnsureUserMiddleware())
 
-async def weekly_backup():
-    while True:
-        try:
-            now = datetime.now()
-            if now.weekday() == 0 and now.hour == 3:  # Понедельник, 03:00
-                backup_dir = data_dir / "backups"
-                backup_dir.mkdir(exist_ok=True)
-                users_backup = backup_dir / f"users_{now.strftime('%Y%m%d_%H%M')}.db"
-                payments_backup = backup_dir / f"payments_{now.strftime('%Y%m%d_%H%M')}.json"
-                shutil.copy("users.db", users_backup)
-                shutil.copy(payments_path, payments_backup)
-                logging.info(f"📦 Резервные копии созданы: {users_backup}, {payments_backup}")
-                await asyncio.sleep(3600)  # чтобы не делать backup несколько раз за утро
-            await asyncio.sleep(1800)  # Проверка дважды в час
-        except Exception as e:
-            logging.error(f"❌ Ошибка при резервном копировании: {e}", exc_info=True)
-
 
 # === Вспомогательные функции ===
-
 def ensure_user(user_id: int):
     cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
     if not cursor.fetchone():
@@ -232,8 +208,10 @@ def save_payment(user_id, invoice_id, amount):
         "timestamp": datetime.now().isoformat()
     })
 
-
 # === Endpoint для Telegram Webhook ===
+router = APIRouter()
+crypto_router = APIRouter()
+
 @router.post("/webhook", response_class=JSONResponse)
 async def telegram_webhook(request: Request):
     try:
@@ -247,21 +225,14 @@ async def telegram_webhook(request: Request):
 # === Endpoint для CryptoBot Webhook ===
 @crypto_router.post("/cryptobot", response_class=JSONResponse)
 async def cryptobot_webhook(request: Request):
-    """
-    Вебхук для CryptoBot.
-    Автоматически уведомляет админа и присылает кнопку для активации подписки.
-    """
     try:
         data = await request.json()
         logging.info(f"🔔 Webhook от CryptoBot: {data}")
-
         if data.get("status") == "paid":
             user_id = int(data.get("payload"))
             amount = data.get("amount")
             invoice_id = data.get("invoice_id")
-            # Сохраняем платеж в payments.json
             save_payment(user_id, invoice_id, amount)
-            # Инлайн-кнопка для активации
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(
@@ -283,13 +254,10 @@ async def cryptobot_webhook(request: Request):
         logging.error(f"❌ Ошибка Webhook CryptoBot: {e}", exc_info=True)
     return JSONResponse(content={"status": "ok"}, media_type="application/json")
 
-# === Остальные функции и endpoint'ы ===
-# ... manual_activate, admin-панель, генерация изображений и т.д. ...
 
 # === Lifespan ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global reminder_task_started
     expected_url = f"{DOMAIN_URL}/webhook"
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(expected_url)
@@ -301,23 +269,14 @@ async def lifespan(app: FastAPI):
         BotCommand(command="help", description="📚 Как пользоваться?"),
         BotCommand(command="admin", description="⚙️ Админка")
     ])
-    # 🛡️ Запускаем только один раз
-    if not reminder_task_started:
-        asyncio.create_task(check_subscription_reminders())
-        reminder_task_started = True
-        logging.info("⏰ Задача напоминаний о подписках запущена.")
+    asyncio.create_task(check_subscription_reminders())
+    asyncio.create_task(weekly_backup())
+    logging.info("⏰ Задача напоминаний о подписках запущена.")
+    logging.info("📦 Задача резервного копирования запущена.")
     yield
     await session.close()
 
-# === Очистка логов ===
-for log_file in ["webhook.log", "errors.log"]:
-    if os.path.exists(log_file) and os.path.getsize(log_file) > 5_000_000:
-        with open(log_file, "w", encoding="utf-8") as f:
-            f.write(f"⚠️ Автоочистка лога {log_file}: {datetime.now()}\n")
 
-reminder_task_started = False  # глобальный флаг вне lifespan
-
-# === Фоновая задача — напоминания о подписках ===
 async def check_subscription_reminders():
     while True:
         try:
@@ -337,14 +296,12 @@ async def check_subscription_reminders():
                 except Exception as e:
                     logging.warning(f"❌ Не удалось отправить сообщение {user_id}: {e}")
 
-            # Новая часть: уведомление о завершении подписки сегодня
             today = datetime.now().strftime("%Y-%m-%d")
             cursor.execute("SELECT user_id FROM users WHERE subscribed = 1 AND subscription_expires = ?", (today,))
             users_expired = cursor.fetchall()
             for user_id_tuple in users_expired:
                 user_id = user_id_tuple[0]
                 try:
-                    # Снять подписку
                     cursor.execute(
                         "UPDATE users SET subscribed = 0, subscription_expires = NULL WHERE user_id = ?",
                         (user_id,)
@@ -358,27 +315,31 @@ async def check_subscription_reminders():
                     print(f"📨 Уведомление об окончании подписки отправлено {user_id}")
                 except Exception as e:
                     logging.warning(f"❌ Не удалось отправить финальное уведомление {user_id}: {e}")
-
         except Exception as e:
             logging.error(f"❌ Ошибка при проверке подписок: {e}", exc_info=True)
-        await asyncio.sleep(3600)  # Проверка раз в час
+        await asyncio.sleep(3600)
 
-# === И только теперь создаём app и регистрируем роутеры! ===
+
+async def weekly_backup():
+    while True:
+        try:
+            now = datetime.now()
+            if now.weekday() == 0 and now.hour == 3:
+                backup_dir = data_dir / "backups"
+                backup_dir.mkdir(exist_ok=True)
+                users_backup = backup_dir / f"users_{now.strftime('%Y%m%d_%H%M')}.db"
+                payments_backup = backup_dir / f"payments_{now.strftime('%Y%m%d_%H%M')}.json"
+                shutil.copy("users.db", users_backup)
+                shutil.copy(payments_path, payments_backup)
+                logging.info(f"📦 Резервные копии созданы: {users_backup}, {payments_backup}")
+                await asyncio.sleep(3600)
+            await asyncio.sleep(1800)
+        except Exception as e:
+            logging.error(f"❌ Ошибка при резервном копировании: {e}", exc_info=True)
+
 app = FastAPI(lifespan=lifespan)
 app.include_router(router)
 app.include_router(crypto_router)
-
-@app.get("/")
-async def root():
-    return {"status": "ok"}
-
-# Не делай asyncio.create_task вне lifespan!
-# Все фоновые задачи лучше запускать через lifespan!
-
-
-# === Сайты ==== 
-
-from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
@@ -395,6 +356,11 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
+
 # === Состояния ===
 class GenStates(StatesGroup):
     await_text = State()
@@ -406,20 +372,21 @@ class AssistantState(StatesGroup):
 class StateAssistant(StatesGroup):
     dialog = State()
 
+
 # === Главное меню ===
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="✍️ Цитаты дня")],
             [KeyboardButton(text="🌌 Gemini AI"), KeyboardButton(text="🌠 Gemini Примеры")],
-            [KeyboardButton(text="🎨 Создать изображение")], 
+            [KeyboardButton(text="🎨 Создать изображение")],
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🌐 Генерация на сайте")],
             [KeyboardButton(text="📚 Как пользоваться?"), KeyboardButton(text="📎 Остальные проекты")]
         ],
         resize_keyboard=True
     )
-# === Создать изображения в боте === 
 
+# === Создать изображения в боте ===
 @dp.message(F.text.in_(["🎨 Создать изображение"]))
 async def handle_image_prompt(message: Message, state: FSMContext):
     await state.clear()
@@ -478,8 +445,6 @@ async def generate_dalle_image(message: Message, state: FSMContext):
         await state.clear()
 
 
-
-
 # === Таймаут для скачивания изображений ===
 aiohttp_timeout = aiohttp.ClientTimeout(total=180)
 
@@ -495,19 +460,10 @@ async def download_image(image_url: str) -> bytes:
     async with aiohttp.ClientSession(timeout=aiohttp_timeout) as s:
         return await fetch_image(s, image_url)
 
-# === Клавиатура для режима Gemini ===
-def gemini_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]]
-    )
-
-
 
 # === Обработчик выхода из Gemini ===
-
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
     await state.clear()
     await callback.message.answer("🔙 Возвращаюсь в главное меню.", reply_markup=main_menu())
     await callback.answer()
@@ -515,10 +471,7 @@ async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(Command("stop"))
 async def stop_command(message: Message, state: FSMContext):
     await state.clear()
-    await state.clear()
     await message.answer("🛑 Режим остановлен. Вы в главном меню:", reply_markup=main_menu())
-    
-    # === Остальная логика перенесена в следующую часть ===
 
 @dp.message(F.text == "🌐 Генерация на сайте")
 async def open_site(message: types.Message):
@@ -597,7 +550,6 @@ async def cmd_profile(message: Message):
 
 
 # === Админка ===
-
 # Состояние для FSM
 class AdminStates(StatesGroup):
     awaiting_broadcast_content = State()
@@ -607,8 +559,6 @@ def log_admin_action(user_id: int, action: str):
     with open("admin.log", "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().isoformat()} — ADMIN [{user_id}]: {action}\n")
 
-def is_admin(user_id: int) -> bool:
-    return str(user_id) == str(ADMIN_ID)
 
 # Сохраняем последние id сообщений с карточками для удаления при смене страницы
 admin_last_card_msgs = {}
@@ -620,7 +570,7 @@ async def admin_panel(message: types.Message, state: FSMContext):
         await message.answer("❌ Доступ запрещён")
         return
 
-    await state.update_data(admin_panel_msg_id=message.message_id)  # Сохраним id входного сообщения
+    await state.update_data(admin_panel_msg_id=message.message_id)
 
     log_admin_action(user_id, "Открыл админку /admin")
     logging.info(f"🕤 Запрос на админку от: {user_id}")
@@ -635,7 +585,7 @@ async def admin_panel(message: types.Message, state: FSMContext):
         return cursor.fetchone()[0]
 
     stats = {
-        "Всего": count_since(datetime(1970, 1, 1)),
+        "Всего": count_since(datetime(1970, 1, 1).date()),
         "Сегодня": count_since(today),
         "Неделя": count_since(week_ago),
         "Месяц": count_since(month_ago),
@@ -704,17 +654,14 @@ async def admin_show_user_list(callback: types.CallbackQuery, state: FSMContext)
     per_page = 10
     offset = (page - 1) * per_page
 
-    # 1. Удаляем старые карточки, если были
     old_msgs = admin_last_card_msgs.get(callback.from_user.id, [])
     for msg_id in old_msgs:
         try:
             await callback.bot.delete_message(callback.message.chat.id, msg_id)
         except Exception:
-            pass  # иногда сообщения уже удалены
+            pass
     admin_last_card_msgs[callback.from_user.id] = []
 
-    # SQL фильтр
-# 2. Фильтруем юзеров
     if filter_type == "no_sub":
         cursor.execute(
             "SELECT user_id, usage_count, subscribed, subscription_expires FROM users WHERE subscribed = 0 ORDER BY joined_at DESC LIMIT ? OFFSET ?",
@@ -732,7 +679,6 @@ async def admin_show_user_list(callback: types.CallbackQuery, state: FSMContext)
         await callback.answer()
         return
 
-    # 3. Навигация и фильтры
     nav_buttons = [
         InlineKeyboardButton(text="⬅️", callback_data=f"user_list:{max(1, page-1)}:{filter_type}"),
         InlineKeyboardButton(text="➡️", callback_data=f"user_list:{page+1}:{filter_type}"),
@@ -744,8 +690,6 @@ async def admin_show_user_list(callback: types.CallbackQuery, state: FSMContext)
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=nav_keyboard)
     await callback.answer()
 
-    # 4. Карточки юзеров (старые + новые)
-    #  (Сначала новые, потом старые: самые новые сверху, самые ранние — внизу)
     msg_ids = []
     for user_id, usage_count, subscribed, expires in users:
         sub_status = "🟢 Активна" if subscribed else "🔴 Нет подписки"
@@ -759,11 +703,9 @@ async def admin_show_user_list(callback: types.CallbackQuery, state: FSMContext)
                 [InlineKeyboardButton(text="✅ Открыть подписку", callback_data=f"activate_user_{user_id}")]
                 ]
             )
-        # лимит 0.07 чтобы Telegram не ругался (можно уменьшить до 0.03)
         m = await callback.message.answer(user_text, parse_mode="HTML", reply_markup=keyboard)
         msg_ids.append(m.message_id)
         await asyncio.sleep(0.07)
-    # Сохраняем id карточек для автоудаления при перелистывании
     admin_last_card_msgs[callback.from_user.id] = msg_ids
 
 
@@ -865,7 +807,6 @@ async def initiate_broadcast(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(AdminStates.awaiting_broadcast_content)
 async def process_broadcast_content(message: Message, state: FSMContext):
     await state.clear()
-    await state.clear()
     cursor.execute("SELECT user_id FROM users WHERE subscribed = 1")
     users = [row[0] for row in cursor.fetchall()]
 
@@ -882,11 +823,10 @@ async def process_broadcast_content(message: Message, state: FSMContext):
             elif message.text:
                 await bot.send_message(user_id, message.text)
             else:
-                continue  # игнорировать неподдерживаемые типы
-            await asyncio.sleep(0.1)  # задержка чтобы не спамить
+                continue
+            await asyncio.sleep(0.1)
             success += 1
         except Exception as e:
-            # Записываем ошибку в broadcast.log
             with open("broadcast.log", "a", encoding="utf-8") as logf:
                 logf.write(f"[Broadcast Error] User {user_id}: {e}\n")
             failed += 1
@@ -902,18 +842,15 @@ async def process_broadcast_content(message: Message, state: FSMContext):
 @dp.message(Command("cancel"), AdminStates.awaiting_broadcast_content)
 async def cancel_broadcast(message: Message, state: FSMContext):
     await state.clear()
-    await state.clear()
     await message.answer("❌ Рассылка отменена.")
 
 @dp.message(F.text.in_(["⚙️ Админка", "админ", "Админ", "admin", "Admin"]))
 async def alias_admin_panel(message: Message):
-    await admin_panel(message)
+    await admin_panel(message, state=None)
 
 @dp.message(Command("admin"))
-async def cmd_admin(message: Message):
-    await admin_panel(message)
-
-# === Callback обработчик кнопки Криптобота === 
+async def cmd_admin(message: Message, state: FSMContext):
+    await admin_panel(message, state)
 
 @dp.callback_query(lambda c: c.data.startswith("activate_user_"))
 async def activate_user_callback(callback: types.CallbackQuery):
@@ -924,7 +861,7 @@ async def activate_user_callback(callback: types.CallbackQuery):
     try:
         user_id = int(callback.data.replace("activate_user_", ""))
         activate_subscription(user_id)
-        await callback.message.edit_reply_markup()  # убираем кнопку
+        await callback.message.edit_reply_markup()
         await callback.message.answer(f"✅ Подписка активирована для <code>{user_id}</code>!", parse_mode="HTML")
         await bot.send_message(user_id, "🎉 Ваша подписка активирована администратором! Спасибо за оплату.")
         logging.info(f"[ADMIN] Подписка вручную открыта для {user_id} (через inline)")
@@ -945,7 +882,7 @@ async def project_links(message: Message):
     ]
     await message.answer("📌 <b>Наши другие проекты:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
 
-# === Оплата подписки пользователем === 
+# === Оплата подписки пользователем ===
 @dp.message(Command("buy"))
 @dp.message(F.text == "💰 Купить подписку")
 async def buy_subscription(message: Message):
@@ -969,7 +906,7 @@ async def buy_subscription(message: Message):
         )
     except Exception as e:
         await message.answer(f"❌ Ошибка создания подписки: {e}")
- 
+
 
 # ========== ТЕСТОВАЯ АКТИВАЦИЯ ==========
 @dp.message(Command("testpay"))
@@ -982,19 +919,16 @@ async def test_payment(message: Message):
     await message.answer("✅ Тестовая оплата прошла! Подписка активирована на 30 дней.")
     logging.info(f"🚦 [TESTPAY] Подписка активирована вручную для {user_id}")
 
-        
+
 @dp.message(Command("pending_payments"))
 async def show_pending_payments(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("❌ Доступ запрещён")
         return
-    # Загрузить все оплаты
     with open(payments_path, "r", encoding="utf-8") as f:
         payments = json.load(f)
-    # Получить всех подписанных пользователей
     cursor.execute("SELECT user_id FROM users WHERE subscribed = 1")
     active_users = set(row[0] for row in cursor.fetchall())
-    # Найти тех, у кого есть оплата, но нет подписки
     pending = [p for p in payments if int(p["user_id"]) not in active_users]
     if not pending:
         await message.answer("✅ Нет неоплаченных/неактивированных платежей.")
@@ -1005,7 +939,6 @@ async def show_pending_payments(message: Message):
     await message.answer(msg, parse_mode="HTML")
 
 # === ✍️ Цитаты дня ===
-
 @dp.message(F.text.in_(['✍️ Цитаты дня']))
 async def handle_text_generation(message: Message, state: FSMContext):
     await state.clear()
@@ -1019,27 +952,26 @@ async def handle_text_generation(message: Message, state: FSMContext):
 
 
 # === Логика генерации ===
-
 async def generate_text_logic(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
         ensure_user(user_id)
-        client = text_client
-
-        if client is None:
-            await message.answer("❌ Ошибка: AI-клиент не настроен.")
+        
+        # Проверка на наличие API-ключа Gemini
+        if not GEMINI_API_KEY:
+            await message.answer("❌ API-ключ Gemini не настроен.")
             return
 
         if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
             await message.answer("🔐 Лимит исчерпан. Купите подписку 💰")
             return
 
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": "Напиши вдохновляющую цитату дня"}],
-            max_tokens=100,
-        )
-        text = response.choices[0].message.content.strip()
+        await message.answer("💭 Думаю...")
+        # Запрос к Gemini
+        model = genai.GenerativeModel("gemini-pro")
+        response = await model.generate_content_async("Напиши вдохновляющую цитату дня")
+        text = response.text
+
         await message.answer(f"🗋 Цитата дня:\n{text}")
 
         if str(user_id) != str(ADMIN_ID):
@@ -1058,17 +990,10 @@ async def generate_text_logic(message: Message, state: FSMContext):
 
 
 # === Управление и отмена ===
-
 @dp.callback_query(F.data == "stop_generation")
 async def stop_generation(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer("⏹ Генерация остановлена.", reply_markup=main_menu())
-    await callback.answer()
-
-@dp.callback_query(F.data == "back_to_menu")
-async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
     await callback.answer()
 
 @dp.message(Command("cancel"))
@@ -1077,7 +1002,6 @@ async def cancel_generation(message: Message, state: FSMContext):
     await message.answer("❌ Генерация отменена.", reply_markup=main_menu())
 
 # === 🌌 Gemini AI — Умный диалог ===
-
 @dp.message(F.text.in_("🌌 Gemini AI"))
 async def start_gemini_dialog(message: Message, state: FSMContext):
     await state.clear()
@@ -1103,10 +1027,9 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
             return
 
         ensure_user(user_id)
-        client = text_client
 
-        if client is None:
-            await message.answer("❌ Ошибка: AI-клиент не настроен.")
+        if not GEMINI_API_KEY:
+            await message.answer("❌ API-ключ Gemini не настроен.")
             return
 
         if str(user_id) != str(ADMIN_ID) and is_limited(user_id):
@@ -1114,12 +1037,10 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
             return
 
         await message.answer("💭 Думаю...")
+        model = genai.GenerativeModel("gemini-pro")
+        response = await model.generate_content_async(prompt)
+        reply = response.text
 
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        reply = response.choices[0].message.content.strip()
         await message.answer(reply)
 
         if str(user_id) != str(ADMIN_ID):
@@ -1131,7 +1052,7 @@ async def handle_gemini_dialog(message: Message, state: FSMContext):
             conn.commit()
 
     except Exception as e:
-        logging.exception("Ошибка в Gemini:")
+        logging.exception("❌ Ошибка в Gemini:")
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -1142,16 +1063,7 @@ async def stop_gemini(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("⏹ Gemini остановлен.", reply_markup=main_menu())
     await callback.answer()
 
-
-@dp.callback_query(F.data == "back_to_menu")
-async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.answer("🔙 Возврат в меню", reply_markup=main_menu())
-    await callback.answer()
-
-
 # === Gemini Примеры и обработка ===
-
 # === 🌠 Gemini Примеры ===
 @dp.message(F.text == "🌠 Gemini Примеры")
 async def gemini_examples(message: Message, state: FSMContext):
@@ -1176,16 +1088,29 @@ async def gemini_examples(message: Message, state: FSMContext):
     await message.answer("🌠 Выберите пример для Gemini:", reply_markup=InlineKeyboardMarkup(inline_keyboard=examples))
     await state.set_state(StateAssistant.dialog)
 
+prompt_map = {
+    "img_landscape": "Пейзаж на закате, горы, озеро, 8K realism",
+    "img_anime_girl": "Аниме девушка с катаной в Cyberpunk стиле",
+    "img_fantasy_city": "Фэнтези город с летающими островами",
+    "img_modern_office": "Современный офис, панорамные окна",
+    "img_food_dessert": "Десерт, как на food-photography",
+    "img_luxury_car": "Спорткар ночью, неон, улица, стиль 8K",
+    "img_loft_interior": "Лофт интерьер, свет, комната",
+    "weather_example": "Какая погода в Алматы завтра?",
+    "news_example": "Что случилось в мире за последние 24 часа?",
+    "movies_example": "Что посмотреть из новых фильмов?",
+    "money_example": "Как заработать в интернете без вложений?",
+    "prompt_example": "Придумай интересный промпт для изображения суперкара",
+    "random_example": "Случайный запрос для Gemini"
+}
 
-@dp.callback_query()
+@dp.callback_query(F.data.in_(prompt_map.keys()))
 async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
     user_id = callback.from_user.id
     ensure_user(user_id)
-    client = text_client
 
-    if client is None:
-        await callback.message.answer("❌ AI-клиент не инициализирован.")
+    if not GEMINI_API_KEY:
+        await callback.message.answer("❌ API-ключ Gemini не настроен.")
         await callback.answer()
         return
 
@@ -1194,39 +1119,24 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    prompt_map = {
-        "img_landscape": "Пейзаж на закате, горы, озеро, 8K realism",
-        "img_anime_girl": "Аниме девушка с катаной в Cyberpunk стиле",
-        "img_fantasy_city": "Фэнтези город с летающими островами",
-        "img_modern_office": "Современный офис, панорамные окна",
-        "img_food_dessert": "Десерт, как на food-photography",
-        "img_luxury_car": "Спорткар ночью, неон, улица, стиль 8K",
-        "img_loft_interior": "Лофт интерьер, свет, комната",
-        "weather_example": "Какая погода в Алматы завтра?",
-        "news_example": "Что случилось в мире за последние 24 часа?",
-        "movies_example": "Что посмотреть из новых фильмов?",
-        "money_example": "Как заработать в интернете без вложений?",
-        "prompt_example": "Придумай интересный промпт для изображения суперкара",
-        "random_example": random.choice([
+    prompt = prompt_map.get(callback.data)
+    if not prompt:
+        await callback.answer("❌ Пример не найден", show_alert=True)
+        return
+        
+    if callback.data == "random_example":
+        prompt = random.choice([
             "Какая погода в Алматы завтра?",
             "Что случилось в мире за последние 24 часа?",
             "Что посмотреть из новых фильмов?",
             "Как заработать в интернете без вложений?"
         ])
-    }
-
-    prompt = prompt_map.get(callback.data)
-    if not prompt:
-        await callback.answer("❌ Пример не найден", show_alert=True)
-        return
 
     try:
         await callback.message.answer("💭 Думаю...")
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        reply = response.choices[0].message.content.strip()
+        model = genai.GenerativeModel("gemini-pro")
+        response = await model.generate_content_async(prompt)
+        reply = response.text
         await callback.message.answer(reply)
 
         if str(user_id) != str(ADMIN_ID):
@@ -1242,6 +1152,7 @@ async def gemini_dispatch(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer(f"❌ Ошибка при генерации ответа: {e}")
 
     await callback.answer()
+
 
 # === Endpoint для сайта /generate-image ===
 @app.post("/generate-image")
@@ -1269,17 +1180,15 @@ async def generate_image(prompt: str = Form(...)):
         return HTMLResponse(content=f"<b>❌ Ошибка: {e}</b>", status_code=500)
 
 # === Endpoint для сайта /analyze-image ===
-
-MAX_IMAGE_SIZE_MB = 10  # Максимальный размер файла (например, 10 МБ)
-MAX_PROMPT_LEN = 400    # Максимальная длина текста запроса
+MAX_IMAGE_SIZE_MB = 10
+MAX_PROMPT_LEN = 400
 
 @app.post("/analyze-image")
 async def analyze_image(
-    prompt: str = Form(...), 
+    prompt: str = Form(...),
     file: UploadFile = File(...)
 ):
     try:
-        # Проверка длины prompt
         if len(prompt.strip()) < 2:
             return HTMLResponse(
                 "<b>❌ Введите более развёрнутый вопрос.</b>", status_code=400
@@ -1288,18 +1197,13 @@ async def analyze_image(
             return HTMLResponse(
                 f"<b>❌ Слишком длинный запрос (максимум {MAX_PROMPT_LEN} символов).</b>", status_code=400
             )
-
         image_bytes = await file.read()
         if len(image_bytes) > MAX_IMAGE_SIZE_MB * 1024 * 1024:
             return HTMLResponse(
                 f"<b>❌ Файл слишком большой (максимум {MAX_IMAGE_SIZE_MB} МБ).</b>", status_code=400
             )
-
-        # Кодируем картинку для передачи в Vision
         b64_image = base64.b64encode(image_bytes).decode()
         data_url = f"data:image/png;base64,{b64_image}"
-
-        # Запрос к OpenAI Vision (gpt-4o)
         vision_response = await image_client.chat.completions.create(
             model="gpt-4o",
             messages=[{
@@ -1311,7 +1215,6 @@ async def analyze_image(
             }],
             max_tokens=500
         )
-
         answer = vision_response.choices[0].message.content.strip()
         return HTMLResponse(content=f"""
             <div style="padding:16px">
@@ -1340,3 +1243,7 @@ async def gallery():
     except Exception as e:
         return HTMLResponse(f"<b>Ошибка загрузки галереи: {e}</b>", status_code=500)
 
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
