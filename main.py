@@ -56,7 +56,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DOMAIN_URL = os.getenv("DOMAIN_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1082828397"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-text_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+text_client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=60.0)
 image_client = AsyncOpenAI(api_key=OPENAI_API_KEY)  # Использовать один и тот же ключ!
 
 # === Инициализация базы данных ===
